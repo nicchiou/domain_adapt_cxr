@@ -79,8 +79,13 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
     :type dataloaders: dict
     :param device: device to train model on
     :type device: str
+<<<<<<< HEAD
     :return: trained nn.Module and training statistics/metrics
     :rtype: Tuple[nn.Module, dict]
+=======
+    :return: [description]
+    :rtype: [type]
+>>>>>>> b57320388bf115335e79f6be9716426611581577
     """
 
     trial_results = dict()
@@ -174,6 +179,7 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
 def test(args: argparse.Namespace, model: torch.nn.Module,
          criterion: torch.nn.Module, test_loader: torch.utils.data.DataLoader,
          device: str):
+<<<<<<< HEAD
     """
     Evaluates classifier module on the provided data set.
 
@@ -190,6 +196,8 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     :return: evaluation statistics/metrics
     :rtype: dict
     """
+=======
+>>>>>>> b57320388bf115335e79f6be9716426611581577
 
     trial_results = dict()
     model.eval()
