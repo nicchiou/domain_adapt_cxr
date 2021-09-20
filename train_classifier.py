@@ -59,7 +59,7 @@ def get_subset_indices(dataset: torch.utils.data.Dataset, n_train_samples: int,
     return idx
 
 
-def train(args: argparse.Namespace, model: torch.nn.Module,
+def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
           criterion: torch.nn.Module, optimizer: torch.optim,
           scheduler: torch.optim.lr_scheduler, dataloaders: dict, device: str):
     """
@@ -92,9 +92,11 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
 
     best_model = copy.deepcopy(model.state_dict())
     best_acc = 0.0
+    num_epochs = args.num_source_epochs if phase == 'source' \
+        else args.num_target_epochs
 
-    for epoch in range(args.num_source_epochs):
-        print('Epoch {}/{}'.format(epoch, args.num_source_epochs - 1))
+    for epoch in range(num_epochs):
+        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
         print('-' * 10)
 
         # Each epoch has a training and validation phase
@@ -251,7 +253,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--exp_dir', type=str, default='test')
     parser.add_argument('--iter_idx', type=int, default=0)
-    parser.add_argument('--load_trained_model', type=bool, default=False)
+    parser.add_argument('--load_trained_model', action='store_true')
     parser.add_argument('--model_path', type=str, default=None)
     parser.add_argument('--num_source_epochs', type=int, default=40)
     parser.add_argument('--num_target_epochs', type=int, default=40)
@@ -261,8 +263,8 @@ if __name__ == '__main__':
     parser.add_argument('--train_seed', type=int, default=8)
     parser.add_argument('--hidden_size', type=int, default=1024)
     parser.add_argument('--data_sampler_seed', type=int, default=8)
-    parser.add_argument('---n_source_samples', type=int, default=20000)
-    parser.add_argument('---n_target_samples', type=int, default=20)
+    parser.add_argument('--n_source_samples', type=int, default=20000)
+    parser.add_argument('--n_target_samples', type=int, default=20)
 
     args = parser.parse_args()
     timestamp = time.strftime("%Y-%m-%d-%H%M")
@@ -338,18 +340,21 @@ if __name__ == '__main__':
     if args.load_trained_model:  # Load existing trained model
         model.load_state_dict(torch.load(args.model_path, map_location=device))
     else:  # Train on source data
-        model, source_results = train(args, model, criterion, optimizer,
-                                      lr_scheduler, dataloaders, device)
+        model, source_results = train(args, 'source', model, criterion,
+                                      optimizer, lr_scheduler, dataloaders,
+                                      device)
         mimic_test_results = test(args, model, criterion, mimic_test_loader,
                                   device)
         chexpert_test_results = test(args, model, criterion,
                                      chexpert_test_loader, device)
         source_results.update(
-            {f'mimic_before_{k}': v for k, v in mimic_test_results.items()})
+            {f'mimic_{k}': v for k, v in mimic_test_results.items()})
         source_results.update(
-            {f'chexpert_before_{k}': v
+            {f'chexpert_{k}': v
                 for k, v in chexpert_test_results.items()})
-        source_results_df = pd.DataFrame(source_results)
+        source_results_df = pd.DataFrame(columns=list(source_results.keys()))
+        source_results_df = source_results_df.append(source_results,
+                                                     ignore_index=True)
         source_results_df.to_parquet(
             os.path.join(exp_dir, f'source_results_{args.iter_idx}.parquet'),
             index=False)
@@ -379,18 +384,20 @@ if __name__ == '__main__':
     dataloaders = {'train': train_loader, 'valid': valid_loader}
 
     # Train on target data
-    model, target_results = train(args, model, criterion, optimizer,
+    model, target_results = train(args, 'target', model, criterion, optimizer,
                                   lr_scheduler, dataloaders, device)
     mimic_test_results = test(args, model, criterion, mimic_test_loader,
                               device)
     chexpert_test_results = test(args, model, criterion, chexpert_test_loader,
                                  device)
     target_results.update(
-        {f'mimic_before_{k}': v for k, v in mimic_test_results.items()})
+        {f'mimic_{k}': v for k, v in mimic_test_results.items()})
     target_results.update(
-        {f'chexpert_before_{k}': v for k, v in chexpert_test_results.items()}
+        {f'chexpert_{k}': v for k, v in chexpert_test_results.items()}
     )
-    target_results_df = pd.DataFrame(target_results)
+    target_results_df = pd.DataFrame(columns=list(target_results.keys()))
+    target_results_df = target_results_df.append(target_results,
+                                                 ignore_index=True)
     target_results_df.to_parquet(
         os.path.join(exp_dir, f'target_results_{args.iter_idx}.parquet'),
         index=False)
