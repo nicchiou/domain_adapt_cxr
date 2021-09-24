@@ -236,6 +236,25 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     return trial_results
 
 
+def freeze_layers(model: torch.nn.Module, fine_tune_layers: list):
+    """
+    Freezes feature-extracting layers of the module
+
+    :param model: model to be frozen
+    :type model: torch.nn.Module
+    :param fine_tune_layers: fine-tuned layers, options: resnet_fc, linear
+    :type fine_tune_layers: list
+    """
+    for param in model.parameters():
+        param.requires_grad = False
+        if 'resnet_fc' in fine_tune_layers:
+            model.resnet.fc.weight.requires_grad = True
+            model.resnet.fc.bias.requires_grad = True
+        if 'linear' in fine_tune_layers:
+            model.linear.weight.requires_grad = True
+            model.linear.bias.requires_grad = True
+
+
 real_mimic_train_path = '/home/nschiou2/CXR/data/train/mimic'
 real_chexpert_train_path = '/home/nschiou2/CXR/data/train/chexpert'
 real_mimic_test_path = '/home/nschiou2/CXR/data/test/mimic'
@@ -244,11 +263,6 @@ real_chexpert_test_path = '/home/nschiou2/CXR/data/test/chexpert'
 
 if __name__ == '__main__':
 
-    if torch.cuda.is_available():
-        device_num = torch.cuda.current_device()
-        device = f'cuda:{device_num}'
-    else:
-        device = 'cpu'
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--exp_dir', type=str, default='test')
@@ -265,6 +279,8 @@ if __name__ == '__main__':
     parser.add_argument('--data_sampler_seed', type=int, default=8)
     parser.add_argument('--n_source_samples', type=int, default=20000)
     parser.add_argument('--n_target_samples', type=int, default=20)
+    parser.add_argument('--freeze', action='store_true')
+    parser.add_argument('-l', '--fine_tune_layers', nargs='+')
 
     args = parser.parse_args()
     timestamp = time.strftime("%Y-%m-%d-%H%M")
@@ -278,6 +294,12 @@ if __name__ == '__main__':
     with open(os.path.join(exp_dir, f'args_{args.iter_idx}.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=4)
     deterministic(args.train_seed)
+
+    if torch.cuda.is_available():
+        device_num = torch.cuda.current_device()
+        device = f'cuda:{device_num}'
+    else:
+        device = 'cpu'
 
     transform = {
         'train':
@@ -310,9 +332,13 @@ if __name__ == '__main__':
 
     # Define classifier, criterion, and optimizer
     model = ResNetClassifier(hidden_size=args.hidden_size)
+    if args.freeze:
+        freeze_layers(model, args.fine_tune_layers)
     model = model.to(device)
     criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
-    optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+    optimizer = torch.optim.SGD(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.lr, momentum=0.9)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7,
                                                    gamma=0.1)
 
