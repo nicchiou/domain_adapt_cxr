@@ -2,7 +2,18 @@
 __pycache__/
 
 sample_notebooks/
-experiments/
+
+!experiments/baseline
+experiments/baseline/*
+!experiments/baseline/*.ipynb
+
+!experiments/combined
+experiments/combined/*
+!experiments/combined/*.ipynb
+
+!experiments/frozen
+experiments/frozen/*
+!experiments/frozen/*.ipynb
 
 interactive.sub
 *.pt
