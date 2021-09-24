@@ -344,9 +344,9 @@ if __name__ == '__main__':
     chexpert_test_results = test(args, model, criterion,
                                  chexpert_test_loader, device)
     trial_results.update(
-        {f'mimic_test_{k}': v for k, v in mimic_test_results.items()})
+        {f'mimic_{k}': v for k, v in mimic_test_results.items()})
     trial_results.update(
-        {f'chexpert_test_{k}': v
+        {f'chexpert_{k}': v
             for k, v in chexpert_test_results.items()})
     results_df = pd.DataFrame(columns=list(trial_results.keys()))
     results_df = results_df.append(trial_results, ignore_index=True)
