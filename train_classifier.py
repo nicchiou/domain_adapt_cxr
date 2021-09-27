@@ -14,7 +14,7 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from torchvision import datasets, transforms
 
-from models import ResNetClassifier
+from models import FiLMedResNet, ResNetClassifier
 
 
 def deterministic(seed):
@@ -236,7 +236,7 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     return trial_results
 
 
-def freeze_layers(model: torch.nn.Module, fine_tune_layers: list):
+def freeze_layers(args: argparse.Namespace, model: torch.nn.Module):
     """
     Freezes feature-extracting layers of the module
 
@@ -245,12 +245,16 @@ def freeze_layers(model: torch.nn.Module, fine_tune_layers: list):
     :param fine_tune_layers: fine-tuned layers, options: resnet_fc, linear
     :type fine_tune_layers: list
     """
-    for param in model.parameters():
-        param.requires_grad = False
-        if 'resnet_fc' in fine_tune_layers:
+    for name, param in model.named_parameters():
+        # Do not freeze FiLM layer parameters
+        if args.film and 'film' in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+        if 'resnet_fc' in args.fine_tune_layers:
             model.resnet.fc.weight.requires_grad = True
             model.resnet.fc.bias.requires_grad = True
-        if 'linear' in fine_tune_layers:
+        if 'linear' in args.fine_tune_layers:
             model.linear.weight.requires_grad = True
             model.linear.bias.requires_grad = True
 
@@ -280,16 +284,18 @@ if __name__ == '__main__':
     parser.add_argument('--n_source_samples', type=int, default=20000)
     parser.add_argument('--n_target_samples', type=int, default=20)
     parser.add_argument('--freeze', action='store_true')
-    parser.add_argument('-l', '--fine_tune_layers', nargs='+')
+    parser.add_argument('-l', '--fine_tune_layers', nargs='+',
+                        help='options include resnet_fc and linear')
+    parser.add_argument('--film', action='store_true')
 
     args = parser.parse_args()
     timestamp = time.strftime("%Y-%m-%d-%H%M")
     if args.iter_idx != 0:  # If running multiple iters, store in same dir
-        exp_dir = args.exp_dir
+        exp_dir = os.path.join('experiments', args.exp_dir)
         if not os.path.isdir(exp_dir):
             raise OSError('Specified directory does not exist!')
     else:  # Otherwise, create a new dir
-        exp_dir = os.path.join('experiments', f'{args.exp_dir}-{timestamp}')
+        exp_dir = os.path.join('experiments', f'{args.exp_dir}')
         os.makedirs(exp_dir, exist_ok=True)
     with open(os.path.join(exp_dir, f'args_{args.iter_idx}.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=4)
@@ -331,9 +337,13 @@ if __name__ == '__main__':
                                          transform['test'])
 
     # Define classifier, criterion, and optimizer
-    model = ResNetClassifier(hidden_size=args.hidden_size)
-    if args.freeze:
-        freeze_layers(model, args.fine_tune_layers)
+    if args.film:
+        model = FiLMedResNet(hidden_size=args.hidden_size)
+        freeze_layers(args, model)
+    else:
+        model = ResNetClassifier(hidden_size=args.hidden_size)
+        if args.freeze:
+            freeze_layers(args, model)
     model = model.to(device)
     criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
     optimizer = torch.optim.SGD(

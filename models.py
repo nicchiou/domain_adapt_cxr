@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 from torchvision import models
 
@@ -29,52 +30,26 @@ class FiLM(nn.Module):
     in the paper `FiLM: Visual Reasoning with a General Conditioning Layer`
     (https://arxiv.org/abs/1709.07871).
     """
-    def __init__(self):
+    def __init__(self, output_size=2048):
         super().__init__()
 
-    def forward(self, x, gamma, beta):
+        self.register_parameter(name='gamma',
+                                param=nn.Parameter(torch.ones(output_size)))
+        self.register_parameter(name='beta',
+                                param=nn.Parameter(torch.zeros(output_size)))
+
+    def forward(self, x):
         """
         Forward pass (modulation)
 
         :param input: input features (N, C, *) where * is any number of dims
-        :param gamma: (N, C)
-        :param beta: (N, C)
+        :param gamma: (C,)
+        :param beta: (C,)
         :return: output, modulated features (N, C, *), same shape as input
         """
-        gamma = gamma.unsqueeze(2).unsqueeze(3).expand_as(x)
-        beta = beta.unsqueeze(2).unsqueeze(3).expand_as(x)
+        gamma = self.gamma.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand_as(x)
+        beta = self.beta.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand_as(x)
         return (gamma * x) + beta
-
-
-class FiLMGenerator(nn.Module):
-    def __init__(self, hidden_size=512):
-        super().__init__()
-
-        self.resnet = models.resnet34(pretrained=True)
-        self.clf = models.resnet152()
-        num_feats = self.resnet.fc.in_features
-
-        self.resnet.fc = nn.Linear(num_feats, hidden_size)
-        self.norm = nn.LayerNorm(hidden_size)
-        self.gamma_func = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.Linear(hidden_size, self.clf.layer4[0].conv1.in_channels)
-        )
-        self.beta_func = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.Linear(hidden_size, self.clf.layer4[0].conv1.in_channels)
-        )
-        self.leaky_relu = nn.LeakyReLU(negative_slope=0.2)
-        del self.clf
-
-    def forward(self, x):
-
-        x = self.leaky_relu(self.resnet(x))
-        x = self.leaky_relu(self.norm(x))
-        gammas = self.leaky_relu(self.gamma_func(x))
-        betas = self.leaky_relu(self.beta_func(x))
-
-        return gammas, betas
 
 
 class FiLMedResNet(nn.Module):
@@ -82,7 +57,7 @@ class FiLMedResNet(nn.Module):
         super().__init__()
 
         self.resnet = models.resnet152(pretrained=True)
-        self.film = FiLM()
+        self.film = FiLM(output_size=1024)  # TODO: don't hard code this
         num_feats = self.resnet.fc.in_features
 
         self.resnet.fc = nn.Linear(num_feats, hidden_size)
@@ -90,7 +65,7 @@ class FiLMedResNet(nn.Module):
         self.linear = nn.Linear(hidden_size, 1)
         self.leaky_relu = nn.LeakyReLU(negative_slope=0.2)
 
-    def forward(self, x, gamma, beta):
+    def forward(self, x):
 
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
@@ -100,7 +75,7 @@ class FiLMedResNet(nn.Module):
         x = self.resnet.layer1(x)
         x = self.resnet.layer2(x)
         x = self.resnet.layer3(x)
-        x = self.film(x, gamma, beta)
+        x = self.film(x)
 
         x = self.resnet.layer4(x)
         x = self.resnet.avgpool(x)
