@@ -15,5 +15,10 @@ experiments/combined/*
 experiments/frozen/*
 !experiments/frozen/*.ipynb
 
+experiments/film_resnet34
+experiments/film_s_20k_t_20
+experiments/film_s_20k_t_50
+experiments/film_s_20k_t_100
+
 interactive.sub
 *.pt
