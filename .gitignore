@@ -15,5 +15,9 @@ experiments/combined/*
 experiments/frozen/*
 !experiments/frozen/*.ipynb
 
+!experiments/film
+experiments/film/*
+!experiments/film/*.ipynb
+
 interactive.sub
 *.pt
