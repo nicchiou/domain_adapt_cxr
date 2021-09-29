@@ -57,7 +57,12 @@ class FiLMedResNet(nn.Module):
         super().__init__()
 
         self.resnet = models.resnet152(pretrained=True)
-        self.film = FiLM(output_size=1024)  # TODO: don't hard code this
+        layer2_input = self.resnet.layer2[0].conv1.in_channels
+        layer3_input = self.resnet.layer3[0].conv1.in_channels
+        layer4_input = self.resnet.layer4[0].conv1.in_channels
+        self.film1 = FiLM(output_size=layer2_input)
+        self.film2 = FiLM(output_size=layer3_input)
+        self.film3 = FiLM(output_size=layer4_input)
         num_feats = self.resnet.fc.in_features
 
         self.resnet.fc = nn.Linear(num_feats, hidden_size)
@@ -75,7 +80,7 @@ class FiLMedResNet(nn.Module):
         x = self.resnet.layer1(x)
         x = self.resnet.layer2(x)
         x = self.resnet.layer3(x)
-        x = self.film(x)
+        x = self.film3(x)
 
         x = self.resnet.layer4(x)
         x = self.resnet.avgpool(x)
