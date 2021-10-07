@@ -92,8 +92,10 @@ def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
 
     best_model = copy.deepcopy(model.state_dict())
     best_acc = 0.0
+    best_loss = np.inf
     num_epochs = args.num_source_epochs if phase == 'source' \
         else args.num_target_epochs
+    epochs_no_improve = 0
 
     for epoch in range(num_epochs):
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -136,12 +138,9 @@ def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
                         loss.backward()
                         optimizer.step()
 
-                # Keep track of performance metrics
-                running_loss += loss.item()
+                # Keep track of performance metrics (loss is mean-reduced)
+                running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data).item()
-
-            if phase == 'train':
-                scheduler.step()
 
             epoch_loss = running_loss / len(y_true_list)
             epoch_acc = float(running_corrects) / len(y_true_list)
@@ -150,21 +149,37 @@ def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
             trial_results[f'{phase}_acc'].append(epoch_acc)
             trial_results[f'{phase}_auc'] = auc
 
+            if phase == 'valid':
+                scheduler.step(epoch_loss)
+
             print('{} Loss: {:.4f} Acc: {:.4f} AUC: {:.4f}'.format(
                 phase, epoch_loss, epoch_acc, auc))
 
             # Save the best model
             if phase == 'valid' and epoch_acc > best_acc:
                 best_acc = epoch_acc
+            if phase == 'valid' and epoch_loss < best_loss:
+                best_loss = epoch_loss
                 best_model = copy.deepcopy(model.state_dict())
+                epochs_no_improve = 0
+            elif phase == 'valid' and epoch > 39:
+                epochs_no_improve += 1
+                if epochs_no_improve >= args.patience and args.early_stop:
+                    print('\nEarly stopping...\n')
+                    break
+        else:
+            print()
+            continue
 
-        print()
+        break
 
     time_elapsed = time.time() - start_time
     print('Training complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
     print('Best valid acc: {:4f}'.format(best_acc))
     trial_results['best_valid_acc'] = best_acc
+    print('Best valid loss: {:4f}'.format(best_loss))
+    trial_results['best_valid_loss'] = best_loss
     print()
 
     # Load best model weights
@@ -259,10 +274,10 @@ def freeze_layers(args: argparse.Namespace, model: torch.nn.Module):
             model.linear.bias.requires_grad = True
 
 
-real_mimic_train_path = '/home/nschiou2/CXR/data/train/mimic'
-real_chexpert_train_path = '/home/nschiou2/CXR/data/train/chexpert'
-real_mimic_test_path = '/home/nschiou2/CXR/data/test/mimic'
-real_chexpert_test_path = '/home/nschiou2/CXR/data/test/chexpert'
+real_mimic_train_path = '/shared/rsaas/nschiou2/CXR/data/train/mimic'
+real_chexpert_train_path = '/shared/rsaas/nschiou2/CXR/data/train/chexpert'
+real_mimic_test_path = '/shared/rsaas/nschiou2/CXR/data/test/mimic'
+real_chexpert_test_path = '/shared/rsaas/nschiou2/CXR/data/test/chexpert'
 
 
 if __name__ == '__main__':
@@ -273,16 +288,19 @@ if __name__ == '__main__':
     parser.add_argument('--iter_idx', type=int, default=0)
     parser.add_argument('--load_trained_model', action='store_true')
     parser.add_argument('--model_path', type=str, default=None)
-    parser.add_argument('--num_source_epochs', type=int, default=40)
-    parser.add_argument('--num_target_epochs', type=int, default=40)
-    parser.add_argument('--lr', type=float, default=0.001)
+    parser.add_argument('--num_source_epochs', type=int, default=80)
+    parser.add_argument('--num_target_epochs', type=int, default=500)
+    parser.add_argument('--source_lr', type=float, default=0.001)
+    parser.add_argument('--target_lr', type=float, default=0.0003)
     parser.add_argument('--source_batch_size', type=int, default=32)
-    parser.add_argument('--target_batch_size', type=int, default=8)
+    parser.add_argument('--target_batch_size', type=int, default=16)
     parser.add_argument('--train_seed', type=int, default=8)
     parser.add_argument('--hidden_size', type=int, default=1024)
     parser.add_argument('--data_sampler_seed', type=int, default=8)
     parser.add_argument('--n_source_samples', type=int, default=20000)
     parser.add_argument('--n_target_samples', type=int, default=20)
+    parser.add_argument('--early_stop', action='store_true')
+    parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('-l', '--fine_tune_layers', nargs='+',
                         help='options include resnet_fc and linear')
@@ -299,7 +317,6 @@ if __name__ == '__main__':
         os.makedirs(exp_dir, exist_ok=True)
     with open(os.path.join(exp_dir, f'args_{args.iter_idx}.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=4)
-    deterministic(args.train_seed)
 
     if torch.cuda.is_available():
         device_num = torch.cuda.current_device()
@@ -339,18 +356,16 @@ if __name__ == '__main__':
     # Define classifier, criterion, and optimizer
     if args.film:
         model = FiLMedResNet(hidden_size=args.hidden_size)
-        freeze_layers(args, model)
     else:
         model = ResNetClassifier(hidden_size=args.hidden_size)
-        if args.freeze:
-            freeze_layers(args, model)
     model = model.to(device)
-    criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     optimizer = torch.optim.SGD(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.lr, momentum=0.9)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7,
-                                                   gamma=0.1)
+        lr=args.source_lr, momentum=0.9)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
+        verbose=True)
 
     # ========== SOURCE PHASE ========== #
     # Select a stratified subset of the training dataset to use
@@ -364,7 +379,8 @@ if __name__ == '__main__':
         [int(np.floor(0.8 * len(subset))), int(np.ceil(0.2 * len(subset)))],
         generator=torch.Generator().manual_seed(args.data_sampler_seed))
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.source_batch_size, shuffle=True)
+        train_dataset, batch_size=args.source_batch_size, shuffle=True,
+        drop_last=True)
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset, batch_size=args.source_batch_size, shuffle=True)
     mimic_test_loader = torch.utils.data.DataLoader(
@@ -372,6 +388,8 @@ if __name__ == '__main__':
     chexpert_test_loader = torch.utils.data.DataLoader(
         chexpert_test, batch_size=args.source_batch_size, shuffle=False)
     dataloaders = {'train': train_loader, 'valid': valid_loader}
+
+    deterministic(args.train_seed)
 
     if args.load_trained_model:  # Load existing trained model
         model.load_state_dict(torch.load(args.model_path, map_location=device))
@@ -399,6 +417,18 @@ if __name__ == '__main__':
                                 f'source_checkpoint_{args.iter_idx}.pt'))
 
     # ========== TARGET PHASE ========== #
+    # Freeze parameters as specified
+    if args.freeze:
+        freeze_layers(args, model)
+
+    # Re-define optimizer and lr_scheduler to update parameters optimized
+    optimizer = torch.optim.SGD(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.target_lr, momentum=0.9)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
+        verbose=True)
+
     # Select a stratified subset of the training dataset to use
     subset_idx = get_subset_indices(mimic_train, args.n_target_samples,
                                     args.data_sampler_seed)
@@ -410,7 +440,8 @@ if __name__ == '__main__':
         [int(np.floor(0.8 * len(subset))), int(np.ceil(0.2 * len(subset)))],
         generator=torch.Generator().manual_seed(args.train_seed))
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.target_batch_size, shuffle=True)
+        train_dataset, batch_size=args.target_batch_size, shuffle=True,
+        drop_last=True)
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset, batch_size=args.target_batch_size, shuffle=True)
     mimic_test_loader = torch.utils.data.DataLoader(
@@ -418,6 +449,8 @@ if __name__ == '__main__':
     chexpert_test_loader = torch.utils.data.DataLoader(
         chexpert_test, batch_size=args.target_batch_size, shuffle=False)
     dataloaders = {'train': train_loader, 'valid': valid_loader}
+
+    deterministic(args.train_seed)
 
     # Train on target data
     model, target_results = train(args, 'target', model, criterion, optimizer,
