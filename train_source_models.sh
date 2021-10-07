@@ -1,17 +1,17 @@
 #!/bin/sh
 
+src_batch_size=16
 tgt_batch_size=16
 n_target_samples=20
 train_seeds=(8 16 31)
 
 for value in {0..2}; do
   python ./train_classifier.py \
+  --early_stop \
   --n_target_samples $n_target_samples \
+  --source_batch_size $src_batch_size \
   --target_batch_size $tgt_batch_size \
-  --exp_dir film_s_20k_t_$n_target_samples \
+  --exp_dir new_baseline/fixed_batch_size/baseline_s_20k_t_$n_target_samples \
   --iter_idx $value \
-  --train_seed ${train_seeds[$value]} \
-  --freeze \
-  --fine_tune_layers resnet_fc linear \
-  --film;
+  --train_seed ${train_seeds[$value]};
 done
