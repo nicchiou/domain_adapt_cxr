@@ -234,7 +234,7 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
                 y_pred_list.append(probs[i].cpu().data.tolist())
 
             # Keep track of performance metrics
-            running_loss += loss.item()
+            running_loss += loss.item() * inputs.size(0)
             running_corrects += torch.sum(preds == labels.data).item()
 
     test_loss = running_loss / len(y_true_list)
@@ -292,7 +292,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_target_epochs', type=int, default=500)
     parser.add_argument('--source_lr', type=float, default=0.001)
     parser.add_argument('--target_lr', type=float, default=0.0003)
-    parser.add_argument('--source_batch_size', type=int, default=32)
+    parser.add_argument('--source_batch_size', type=int, default=16)
     parser.add_argument('--target_batch_size', type=int, default=16)
     parser.add_argument('--train_seed', type=int, default=8)
     parser.add_argument('--hidden_size', type=int, default=1024)
