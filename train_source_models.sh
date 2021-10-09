@@ -11,7 +11,7 @@ for value in {0..2}; do
   --n_target_samples $n_target_samples \
   --source_batch_size $src_batch_size \
   --target_batch_size $tgt_batch_size \
-  --exp_dir new_baseline/fixed_batch_size/baseline_s_20k_t_$n_target_samples \
+  --exp_dir baseline/fixed_batch_size/baseline_s_20k_t_$n_target_samples \
   --iter_idx $value \
   --train_seed ${train_seeds[$value]};
 done
