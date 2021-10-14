@@ -1,7 +1,9 @@
 .vscode/
+.ipynb_checkpoints/
 __pycache__/
 
 sample_notebooks/
+experiments/old_results/
 
 !experiments/baseline
 experiments/baseline/*
@@ -11,13 +13,9 @@ experiments/baseline/*
 experiments/combined/*
 !experiments/combined/*.ipynb
 
-!experiments/frozen
-experiments/frozen/*
-!experiments/frozen/*.ipynb
-
-!experiments/film
-experiments/film/*
-!experiments/film/*.ipynb
+!experiments/reverse
+experiments/reverse/*
+!experiments/reverse/*.ipynb
 
 interactive.sub
 *.pt
