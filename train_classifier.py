@@ -14,11 +14,13 @@ from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 from torchvision import datasets, transforms
 
-from models import FiLMedResNet, ResNetClassifier
+from models import (FiLMedResNetBN, FiLMedResNetFineTune, FiLMedResNetModular,
+                    ResNetClassifier)
 
 
 def deterministic(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':16:8'
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -59,7 +61,7 @@ def get_subset_indices(dataset: torch.utils.data.Dataset, n_train_samples: int,
     return idx
 
 
-def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
+def train(args: argparse.Namespace, da_phase: str, model: torch.nn.Module,
           criterion: torch.nn.Module, optimizer: torch.optim,
           scheduler: torch.optim.lr_scheduler, dataloaders: dict, device: str):
     """
@@ -92,12 +94,16 @@ def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
 
     best_model = copy.deepcopy(model.state_dict())
     best_acc = 0.0
-    num_epochs = args.num_source_epochs if phase == 'source' \
+    best_loss = np.inf
+    final_train_loss = 0.0
+    final_train_acc = 0.0
+    num_epochs = args.num_source_epochs if da_phase == 'source' \
         else args.num_target_epochs
+    epochs_no_improve = 0
 
     for epoch in range(num_epochs):
-        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
-        print('-' * 10)
+        print('Epoch {}/{}'.format(epoch, num_epochs - 1), flush=True)
+        print('-' * 10, flush=True)
 
         # Each epoch has a training and validation phase
         for phase in ['train', 'valid']:
@@ -136,12 +142,9 @@ def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
                         loss.backward()
                         optimizer.step()
 
-                # Keep track of performance metrics
-                running_loss += loss.item()
+                # Keep track of performance metrics (loss is mean-reduced)
+                running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data).item()
-
-            if phase == 'train':
-                scheduler.step()
 
             epoch_loss = running_loss / len(y_true_list)
             epoch_acc = float(running_corrects) / len(y_true_list)
@@ -150,22 +153,52 @@ def train(args: argparse.Namespace, phase: str, model: torch.nn.Module,
             trial_results[f'{phase}_acc'].append(epoch_acc)
             trial_results[f'{phase}_auc'] = auc
 
+            # Update LR scheduler with current validation loss
+            if phase == 'valid':
+                scheduler.step(epoch_loss)
+
+            # Keep track of current training loss and accuracy
+            if phase == 'train':
+                final_train_loss = epoch_loss
+                final_train_acc = epoch_acc
+
+            # Print metrics to stdout
             print('{} Loss: {:.4f} Acc: {:.4f} AUC: {:.4f}'.format(
-                phase, epoch_loss, epoch_acc, auc))
+                phase, epoch_loss, epoch_acc, auc), flush=True)
 
             # Save the best model
             if phase == 'valid' and epoch_acc > best_acc:
                 best_acc = epoch_acc
+            if phase == 'valid' and epoch_loss < best_loss:
+                best_loss = epoch_loss
                 best_model = copy.deepcopy(model.state_dict())
+                epochs_no_improve = 0
+            elif phase == 'valid' and epoch > 39:
+                epochs_no_improve += 1
+                if epochs_no_improve >= args.patience and args.early_stop:
+                    print('\nEarly stopping...\n', flush=True)
+                    trial_results['epoch_early_stop'] = epoch + 1
+                    break
+        else:
+            print(flush=True)
+            continue
 
-        print()
+        break
 
     time_elapsed = time.time() - start_time
     print('Training complete in {:.0f}m {:.0f}s'.format(
-        time_elapsed // 60, time_elapsed % 60))
-    print('Best valid acc: {:4f}'.format(best_acc))
+        time_elapsed // 60, time_elapsed % 60), flush=True)
+    print('Best valid acc: {:4f}'.format(best_acc), flush=True)
     trial_results['best_valid_acc'] = best_acc
-    print()
+    print('Best valid loss: {:4f}'.format(best_loss), flush=True)
+    trial_results['best_valid_loss'] = best_loss
+    print(flush=True)
+
+    # Save final model results
+    trial_results['final_train_loss'] = final_train_loss
+    trial_results['final_valid_loss'] = epoch_loss
+    trial_results['final_train_acc'] = final_train_acc
+    trial_results['final_valid_acc'] = epoch_acc
 
     # Load best model weights
     model.load_state_dict(best_model)
@@ -219,7 +252,7 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
                 y_pred_list.append(probs[i].cpu().data.tolist())
 
             # Keep track of performance metrics
-            running_loss += loss.item()
+            running_loss += loss.item() * inputs.size(0)
             running_corrects += torch.sum(preds == labels.data).item()
 
     test_loss = running_loss / len(y_true_list)
@@ -230,15 +263,15 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     trial_results['test_auc'] = auc
 
     print('Test Loss: {:.4f} Acc: {:.4f} AUC: {:.4f}'.format(
-          test_loss, test_acc, auc))
-    print()
+          test_loss, test_acc, auc), flush=True)
+    print(flush=True)
 
     return trial_results
 
 
 def freeze_layers(args: argparse.Namespace, model: torch.nn.Module):
     """
-    Freezes feature-extracting layers of the module
+    Freezes feature-extracting layers of the module in place.
 
     :param model: model to be frozen
     :type model: torch.nn.Module
@@ -246,11 +279,16 @@ def freeze_layers(args: argparse.Namespace, model: torch.nn.Module):
     :type fine_tune_layers: list
     """
     for name, param in model.named_parameters():
+
         # Do not freeze FiLM layer parameters
-        if args.film and 'film' in name:
+        if ('gamma' in name or 'beta' in name):
+            param.requires_grad = True
+        elif args.film and 'film' in name:
             param.requires_grad = True
         else:
             param.requires_grad = False
+
+        # Allow fine-tuning of classification layers
         if 'resnet_fc' in args.fine_tune_layers:
             model.resnet.fc.weight.requires_grad = True
             model.resnet.fc.bias.requires_grad = True
@@ -258,11 +296,42 @@ def freeze_layers(args: argparse.Namespace, model: torch.nn.Module):
             model.linear.weight.requires_grad = True
             model.linear.bias.requires_grad = True
 
+        # Allow fine-tuning of batch norm layers
+        if 'bn_sparse' in args.fine_tune_layers:
+            if 'resnet.layer1.2.bn3' in name:
+                param.requires_grad = True
+            if 'resnet.layer2.7.bn3' in name:
+                param.requires_grad = True
+            if 'resnet.layer3.35.bn3' in name:
+                param.requires_grad = True
+        elif 'bn_all' in args.fine_tune_layers:
+            if 'bn3' in name:
+                param.requires_grad = True
 
-real_mimic_train_path = '/home/nschiou2/CXR/data/train/mimic'
-real_chexpert_train_path = '/home/nschiou2/CXR/data/train/chexpert'
-real_mimic_test_path = '/home/nschiou2/CXR/data/test/mimic'
-real_chexpert_test_path = '/home/nschiou2/CXR/data/test/chexpert'
+    print('Fine-tuning the following parameters...', flush=True)
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f'\t{name}', flush=True)
+    print(flush=True)
+
+
+def remove_dropout_layers(model: torch.nn.Module):
+    """
+    Removes dropout layers from the input model (if present). Modifies the
+    model in place.
+
+    :param model: model to be manipulated
+    :type model: torch.nn.Module
+    """
+    for name, layer in model.named_modules():
+        if isinstance(layer, torch.nn.Dropout):
+            setattr(model, name, torch.nn.Identity())
+
+
+real_mimic_train_path = '/shared/rsaas/nschiou2/CXR/data/train/mimic'
+real_chexpert_train_path = '/shared/rsaas/nschiou2/CXR/data/train/chexpert'
+real_mimic_test_path = '/shared/rsaas/nschiou2/CXR/data/test/mimic'
+real_chexpert_test_path = '/shared/rsaas/nschiou2/CXR/data/test/chexpert'
 
 
 if __name__ == '__main__':
@@ -273,20 +342,34 @@ if __name__ == '__main__':
     parser.add_argument('--iter_idx', type=int, default=0)
     parser.add_argument('--load_trained_model', action='store_true')
     parser.add_argument('--model_path', type=str, default=None)
-    parser.add_argument('--num_source_epochs', type=int, default=40)
-    parser.add_argument('--num_target_epochs', type=int, default=40)
-    parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--source_batch_size', type=int, default=32)
-    parser.add_argument('--target_batch_size', type=int, default=8)
+    parser.add_argument('--num_source_epochs', type=int, default=80)
+    parser.add_argument('--num_target_epochs', type=int, default=500)
+    parser.add_argument('--source_lr', type=float, default=0.001)
+    parser.add_argument('--target_lr', type=float, default=0.0003)
+    parser.add_argument('--source_batch_size', type=int, default=16)
+    parser.add_argument('--target_batch_size', type=int, default=16)
     parser.add_argument('--train_seed', type=int, default=8)
     parser.add_argument('--hidden_size', type=int, default=1024)
     parser.add_argument('--data_sampler_seed', type=int, default=8)
     parser.add_argument('--n_source_samples', type=int, default=20000)
     parser.add_argument('--n_target_samples', type=int, default=20)
+    parser.add_argument('--early_stop', action='store_true')
+    parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('-l', '--fine_tune_layers', nargs='+',
-                        help='options include resnet_fc and linear')
+                        help='options include resnet_fc, linear,  ' +
+                        'bn_sparse, and bn_all')
     parser.add_argument('--film', action='store_true')
+    parser.add_argument('--film_layers', type=int, nargs='+',
+                        default=[3],
+                        help='options include combinations of 1, 2, and 3')
+    parser.add_argument('--add_in_film', action='store_true',
+                        help='adds FiLM layers only for the fine-tuning phase')
+    parser.add_argument('--replace_BN', type=str, default='none',
+                        help='options to replace BN layers in the ResNet: ' +
+                        'none (default), sparse (every block), all')
+    parser.add_argument('--remove_dropout', action='store_true',
+                        help='removes dropout layers during fine-tuning')
 
     args = parser.parse_args()
     timestamp = time.strftime("%Y-%m-%d-%H%M")
@@ -337,22 +420,28 @@ if __name__ == '__main__':
                                          transform['test'])
 
     # Define classifier, criterion, and optimizer
-    if args.film:
-        model = FiLMedResNet(hidden_size=args.hidden_size)
-        freeze_layers(args, model)
+    if args.film and not args.add_in_film:
+        if args.replace_BN != 'none':
+            model = FiLMedResNetBN(hidden_size=args.hidden_size,
+                                   replace_mode=args.replace_BN)
+        else:
+            model = FiLMedResNetModular(hidden_size=args.hidden_size,
+                                        film_layers=args.film_layers)
     else:
         model = ResNetClassifier(hidden_size=args.hidden_size)
-        if args.freeze:
-            freeze_layers(args, model)
     model = model.to(device)
-    criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     optimizer = torch.optim.SGD(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.lr, momentum=0.9)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7,
-                                                   gamma=0.1)
+        lr=args.source_lr, momentum=0.9)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
+        verbose=True)
 
     # ========== SOURCE PHASE ========== #
+    # Control deterministic behavior
+    deterministic(args.train_seed)
+
     # Select a stratified subset of the training dataset to use
     subset_idx = get_subset_indices(chexpert_train, args.n_source_samples,
                                     args.data_sampler_seed)
@@ -364,7 +453,8 @@ if __name__ == '__main__':
         [int(np.floor(0.8 * len(subset))), int(np.ceil(0.2 * len(subset)))],
         generator=torch.Generator().manual_seed(args.data_sampler_seed))
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.source_batch_size, shuffle=True)
+        train_dataset, batch_size=args.source_batch_size, shuffle=True,
+        drop_last=True)
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset, batch_size=args.source_batch_size, shuffle=True)
     mimic_test_loader = torch.utils.data.DataLoader(
@@ -399,6 +489,29 @@ if __name__ == '__main__':
                                 f'source_checkpoint_{args.iter_idx}.pt'))
 
     # ========== TARGET PHASE ========== #
+    # Control deterministic behavior
+    deterministic(args.train_seed)
+
+    # Freeze parameters or adjust layers as specified
+    if args.add_in_film:
+        kwargs = {'hidden_size': args.hidden_size,
+                  'replace_mode': args.replace_BN}
+        model = FiLMedResNetFineTune(pretrained=model,
+                                     new_model_class=FiLMedResNetBN, **kwargs)
+        model.to(device)
+    if args.freeze:
+        freeze_layers(args, model)
+    if args.remove_dropout:
+        remove_dropout_layers(model)
+
+    # Re-define optimizer and lr_scheduler to update parameters optimized
+    optimizer = torch.optim.SGD(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=args.target_lr, momentum=0.9)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
+        verbose=True)
+
     # Select a stratified subset of the training dataset to use
     subset_idx = get_subset_indices(mimic_train, args.n_target_samples,
                                     args.data_sampler_seed)
@@ -410,7 +523,8 @@ if __name__ == '__main__':
         [int(np.floor(0.8 * len(subset))), int(np.ceil(0.2 * len(subset)))],
         generator=torch.Generator().manual_seed(args.train_seed))
     train_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.target_batch_size, shuffle=True)
+        train_dataset, batch_size=args.target_batch_size, shuffle=True,
+        drop_last=True)
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset, batch_size=args.target_batch_size, shuffle=True)
     mimic_test_loader = torch.utils.data.DataLoader(

@@ -19,6 +19,7 @@ from models import ResNetClassifier
 
 def deterministic(seed):
     os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':16:8'
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -92,6 +93,8 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
 
     best_model = copy.deepcopy(model.state_dict())
     best_acc = 0.0
+    best_loss = np.inf
+    epochs_no_improve = 0
 
     for epoch in range(args.num_epochs):
         print('Epoch {}/{}'.format(epoch, args.num_epochs - 1))
@@ -134,12 +137,9 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
                         loss.backward()
                         optimizer.step()
 
-                # Keep track of performance metrics
-                running_loss += loss.item()
+                # Keep track of performance metrics (loss is mean-reduced)
+                running_loss += loss.item() * inputs.size(0)
                 running_corrects += torch.sum(preds == labels.data).item()
-
-            if phase == 'train':
-                scheduler.step()
 
             epoch_loss = running_loss / len(y_true_list)
             epoch_acc = float(running_corrects) / len(y_true_list)
@@ -148,6 +148,9 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
             trial_results[f'{phase}_acc'].append(epoch_acc)
             trial_results[f'{phase}_auc'] = auc
 
+            if phase == 'valid':
+                scheduler.step(epoch_loss)
+
             print('{} Loss: {:.4f} Acc: {:.4f} AUC: {:.4f}'.format(
                 phase, epoch_loss, epoch_acc, auc))
 
@@ -155,14 +158,28 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
             if phase == 'valid' and epoch_acc > best_acc:
                 best_acc = epoch_acc
                 best_model = copy.deepcopy(model.state_dict())
+            if phase == 'valid' and epoch_loss < best_loss:
+                best_loss = epoch_loss
+                best_model = copy.deepcopy(model.state_dict())
+                epochs_no_improve = 0
+            elif phase == 'valid' and epoch > 39:
+                epochs_no_improve += 1
+                if epochs_no_improve >= args.patience and args.early_stop:
+                    print('\nEarly stopping...\n')
+                    break
+        else:
+            print()
+            continue
 
-        print()
+        break
 
     time_elapsed = time.time() - start_time
     print('Training complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
     print('Best valid acc: {:4f}'.format(best_acc))
     trial_results['best_valid_acc'] = best_acc
+    print('Best valid loss: {:4f}'.format(best_loss))
+    trial_results['best_valid_loss'] = best_loss
     print()
 
     # Load best model weights
@@ -217,7 +234,7 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
                 y_pred_list.append(probs[i].cpu().data.tolist())
 
             # Keep track of performance metrics
-            running_loss += loss.item()
+            running_loss += loss.item() * inputs.size(0)
             running_corrects += torch.sum(preds == labels.data).item()
 
     test_loss = running_loss / len(y_true_list)
@@ -234,10 +251,10 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     return trial_results
 
 
-real_mimic_train_path = '/home/nschiou2/CXR/data/train/mimic'
-real_chexpert_train_path = '/home/nschiou2/CXR/data/train/chexpert'
-real_mimic_test_path = '/home/nschiou2/CXR/data/test/mimic'
-real_chexpert_test_path = '/home/nschiou2/CXR/data/test/chexpert'
+real_mimic_train_path = '/shared/rsaas/nschiou2/CXR/data/train/mimic'
+real_chexpert_train_path = '/shared/rsaas/nschiou2/CXR/data/train/chexpert'
+real_mimic_test_path = '/shared/rsaas/nschiou2/CXR/data/test/mimic'
+real_chexpert_test_path = '/shared/rsaas/nschiou2/CXR/data/test/chexpert'
 
 
 if __name__ == '__main__':
@@ -251,23 +268,25 @@ if __name__ == '__main__':
 
     parser.add_argument('--exp_dir', type=str, default='test')
     parser.add_argument('--iter_idx', type=int, default=0)
-    parser.add_argument('--num_epochs', type=int, default=40)
+    parser.add_argument('--num_epochs', type=int, default=80)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--train_seed', type=int, default=8)
     parser.add_argument('--hidden_size', type=int, default=1024)
     parser.add_argument('--data_sampler_seed', type=int, default=8)
-    parser.add_argument('---n_source_samples', type=int, default=5000)
-    parser.add_argument('---n_target_samples', type=int, default=5000)
+    parser.add_argument('--n_source_samples', type=int, default=10000)
+    parser.add_argument('--n_target_samples', type=int, default=10000)
+    parser.add_argument('--early_stop', action='store_true')
+    parser.add_argument('--patience', type=int, default=30)
 
     args = parser.parse_args()
     timestamp = time.strftime("%Y-%m-%d-%H%M")
     if args.iter_idx != 0:  # If running multiple iters, store in same dir
-        exp_dir = args.exp_dir
+        exp_dir = os.path.join('experiments', args.exp_dir)
         if not os.path.isdir(exp_dir):
             raise OSError('Specified directory does not exist!')
     else:  # Otherwise, create a new dir
-        exp_dir = os.path.join('experiments', f'{args.exp_dir}-{timestamp}')
+        exp_dir = os.path.join('experiments', f'{args.exp_dir}')
         os.makedirs(exp_dir, exist_ok=True)
     with open(os.path.join(exp_dir, f'args_{args.iter_idx}.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=4)
@@ -305,10 +324,11 @@ if __name__ == '__main__':
     # Define classifier, criterion, and optimizer
     model = ResNetClassifier(hidden_size=args.hidden_size)
     model = model.to(device)
-    criterion = torch.nn.BCEWithLogitsLoss(reduction='sum')
+    criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=7,
-                                                   gamma=0.1)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
+        verbose=True)
 
     # ========== TRAINING / EVALUATION PHASE ========== #
     # Select a stratified subset of the training dataset to use
@@ -321,6 +341,7 @@ if __name__ == '__main__':
                                            args.data_sampler_seed)
     target_subset = torch.utils.data.Subset(mimic_train, target_subset_idx)
     subset = torch.utils.data.ConcatDataset([source_subset, target_subset])
+    print('train dataset size: ', len(subset))
 
     # Split into train and validation sets and create PyTorch Dataloaders
     train_dataset, valid_dataset = torch.utils.data.random_split(
