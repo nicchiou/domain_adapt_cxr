@@ -4,60 +4,18 @@ import argparse
 import copy
 import json
 import os
-import random
 import time
 
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
 from torchvision import datasets, transforms
 
-from models import ResNetClassifier
-
-
-def deterministic(seed):
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':16:8'
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-
-
-def get_subset_indices(dataset: torch.utils.data.Dataset, n_train_samples: int,
-                       random_seed: int):
-    """
-    Randomly selects n_train_samples number of indices from the dataset,
-    stratified by dataset target labels.
-
-    :param dataset: PyTorch train dataset
-    :type dataset: torch.utils.data.Dataset
-    :param n_train_samples: number of training samples to include in the
-        training dataset
-    :type n_train_samples: int
-    :param random_seed: user-specified random seed for the selection of
-        training examples
-    :type random_seed: int
-    :return: a (n_train_samples,) np.array containing the randomly-selected
-        training indices
-    """
-    if len(dataset.targets) == n_train_samples:
-        idx = np.arange(len(dataset))
-        np.random.seed(random_seed)
-        np.random.shuffle(idx)
-    else:
-        test_size = len(dataset.targets) - n_train_samples
-        idx, _ = train_test_split(list(range(len(dataset.targets))),
-                                  test_size=test_size,
-                                  stratify=dataset.targets,
-                                  random_state=random_seed, shuffle=True)
-    return idx
+from utils import constants
+from models.resnet import ResNetClassifier
+from utils.data_sampler import get_subset_indices
+from utils.utils import deterministic
 
 
 def train(args: argparse.Namespace, model: torch.nn.Module,
@@ -251,12 +209,6 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     return trial_results
 
 
-real_mimic_train_path = '/shared/rsaas/nschiou2/CXR/data/train/mimic'
-real_chexpert_train_path = '/shared/rsaas/nschiou2/CXR/data/train/chexpert'
-real_mimic_test_path = '/shared/rsaas/nschiou2/CXR/data/test/mimic'
-real_chexpert_test_path = '/shared/rsaas/nschiou2/CXR/data/test/chexpert'
-
-
 if __name__ == '__main__':
 
     if torch.cuda.is_available():
@@ -268,6 +220,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--exp_dir', type=str, default='test')
     parser.add_argument('--iter_idx', type=int, default=0)
+    parser.add_argument('--resnet', type=str, default='resnet152')
     parser.add_argument('--num_epochs', type=int, default=80)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--batch_size', type=int, default=16)
@@ -312,17 +265,17 @@ if __name__ == '__main__':
     }
 
     # Load PyTorch datasets from directories
-    mimic_train = datasets.ImageFolder(real_mimic_train_path,
+    mimic_train = datasets.ImageFolder(constants.REAL_MIMIC_TRAIN_PATH,
                                        transform['train'])
-    chexpert_train = datasets.ImageFolder(real_chexpert_train_path,
+    chexpert_train = datasets.ImageFolder(constants.REAL_CHEXPERT_TRAIN_PATH,
                                           transform['train'])
-    mimic_test = datasets.ImageFolder(real_mimic_test_path,
+    mimic_test = datasets.ImageFolder(constants.REAL_MIMIC_TEST_PATH,
                                       transform['test'])
-    chexpert_test = datasets.ImageFolder(real_chexpert_test_path,
+    chexpert_test = datasets.ImageFolder(constants.REAL_CHEXPERT_TEST_PATH,
                                          transform['test'])
 
     # Define classifier, criterion, and optimizer
-    model = ResNetClassifier(hidden_size=args.hidden_size)
+    model = ResNetClassifier(hidden_size=args.hidden_size, resnet=args.resnet)
     model = model.to(device)
     criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
