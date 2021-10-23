@@ -19,3 +19,7 @@ experiments/reverse/*
 
 interactive.sub
 *.pt
+*.egg-info
+*.log
+*.stdout
+*.stderr
