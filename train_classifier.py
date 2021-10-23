@@ -4,61 +4,21 @@ import argparse
 import copy
 import json
 import os
-import random
 import time
 
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
 from torchvision import datasets, transforms
 
-from models import (FiLMedResNetBN, FiLMedResNetFineTune, FiLMedResNetModular,
-                    ResNetClassifier)
-
-
-def deterministic(seed):
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':16:8'
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-
-
-def get_subset_indices(dataset: torch.utils.data.Dataset, n_train_samples: int,
-                       random_seed: int):
-    """
-    Randomly selects n_train_samples number of indices from the dataset,
-    stratified by dataset target labels.
-
-    :param dataset: PyTorch train dataset
-    :type dataset: torch.utils.data.Dataset
-    :param n_train_samples: number of training samples to include in the
-        training dataset
-    :type n_train_samples: int
-    :param random_seed: user-specified random seed for the selection of
-        training examples
-    :type random_seed: int
-    :return: a (n_train_samples,) np.array containing the randomly-selected
-        training indices
-    """
-    if len(dataset.targets) == n_train_samples:
-        idx = np.arange(len(dataset))
-        np.random.seed(random_seed)
-        np.random.shuffle(idx)
-    else:
-        test_size = len(dataset.targets) - n_train_samples
-        idx, _ = train_test_split(list(range(len(dataset.targets))),
-                                  test_size=test_size,
-                                  stratify=dataset.targets,
-                                  random_state=random_seed, shuffle=True)
-    return idx
+from models.film import (FiLMedResNetBN, FiLMedResNetFineTune,
+                         FiLMedResNetInitialLayers, FiLMedResNetModular)
+from models.resnet import ResNetClassifier
+from utils import constants
+from utils.adjustments import freeze_layers, remove_dropout_layers
+from utils.data_sampler import get_subset_indices
+from utils.utils import deterministic
 
 
 def train(args: argparse.Namespace, da_phase: str, model: torch.nn.Module,
@@ -269,77 +229,13 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     return trial_results
 
 
-def freeze_layers(args: argparse.Namespace, model: torch.nn.Module):
-    """
-    Freezes feature-extracting layers of the module in place.
-
-    :param model: model to be frozen
-    :type model: torch.nn.Module
-    :param fine_tune_layers: fine-tuned layers, options: resnet_fc, linear
-    :type fine_tune_layers: list
-    """
-    for name, param in model.named_parameters():
-
-        # Do not freeze FiLM layer parameters
-        if ('gamma' in name or 'beta' in name):
-            param.requires_grad = True
-        elif args.film and 'film' in name:
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
-
-        # Allow fine-tuning of classification layers
-        if 'resnet_fc' in args.fine_tune_layers:
-            model.resnet.fc.weight.requires_grad = True
-            model.resnet.fc.bias.requires_grad = True
-        if 'linear' in args.fine_tune_layers:
-            model.linear.weight.requires_grad = True
-            model.linear.bias.requires_grad = True
-
-        # Allow fine-tuning of batch norm layers
-        if 'bn_sparse' in args.fine_tune_layers:
-            if 'resnet.layer1.2.bn3' in name:
-                param.requires_grad = True
-            if 'resnet.layer2.7.bn3' in name:
-                param.requires_grad = True
-            if 'resnet.layer3.35.bn3' in name:
-                param.requires_grad = True
-        elif 'bn_all' in args.fine_tune_layers:
-            if 'bn3' in name:
-                param.requires_grad = True
-
-    print('Fine-tuning the following parameters...', flush=True)
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f'\t{name}', flush=True)
-    print(flush=True)
-
-
-def remove_dropout_layers(model: torch.nn.Module):
-    """
-    Removes dropout layers from the input model (if present). Modifies the
-    model in place.
-
-    :param model: model to be manipulated
-    :type model: torch.nn.Module
-    """
-    for name, layer in model.named_modules():
-        if isinstance(layer, torch.nn.Dropout):
-            setattr(model, name, torch.nn.Identity())
-
-
-real_mimic_train_path = '/shared/rsaas/nschiou2/CXR/data/train/mimic'
-real_chexpert_train_path = '/shared/rsaas/nschiou2/CXR/data/train/chexpert'
-real_mimic_test_path = '/shared/rsaas/nschiou2/CXR/data/test/mimic'
-real_chexpert_test_path = '/shared/rsaas/nschiou2/CXR/data/test/chexpert'
-
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--exp_dir', type=str, default='test')
     parser.add_argument('--iter_idx', type=int, default=0)
+    parser.add_argument('--resnet', type=str, default='resnet152')
     parser.add_argument('--load_trained_model', action='store_true')
     parser.add_argument('--model_path', type=str, default=None)
     parser.add_argument('--num_source_epochs', type=int, default=80)
@@ -357,8 +253,8 @@ if __name__ == '__main__':
     parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('-l', '--fine_tune_layers', nargs='+',
-                        help='options include resnet_fc, linear,  ' +
-                        'bn_sparse, and bn_all')
+                        help='options include resnet_fc, linear, bn_sparse, '
+                        'and bn_all')
     parser.add_argument('--film', action='store_true')
     parser.add_argument('--film_layers', type=int, nargs='+',
                         default=[3],
@@ -366,8 +262,17 @@ if __name__ == '__main__':
     parser.add_argument('--add_in_film', action='store_true',
                         help='adds FiLM layers only for the fine-tuning phase')
     parser.add_argument('--replace_BN', type=str, default='none',
-                        help='options to replace BN layers in the ResNet: ' +
-                        'none (default), sparse (every block), all')
+                        help='options to replace BN layers in the ResNet: '
+                        'none (default), sparse (every block), all '
+                        '(every bottleneck), custom (specify replace_layers '
+                        'and bn_replace numbers), or initial (first BN after '
+                        'the input)')
+    parser.add_argument('--replace_layers', type=float, nargs='+', default=[],
+                        help='ResNet layer blocks to replace BNs with FiLM. '
+                        'Note: 3.0 replaces all bottleneck BNs in layer3 '
+                        '3.1 is the first 12, 3.2 is the second 12, etc.')
+    parser.add_argument('--bn_replace', type=int, default=[3], nargs='+',
+                        help='BN number in bottleneck module to replace')
     parser.add_argument('--remove_dropout', action='store_true',
                         help='removes dropout layers during fine-tuning')
 
@@ -410,25 +315,31 @@ if __name__ == '__main__':
     }
 
     # Load PyTorch datasets from directories
-    mimic_train = datasets.ImageFolder(real_mimic_train_path,
+    mimic_train = datasets.ImageFolder(constants.REAL_MIMIC_TRAIN_PATH,
                                        transform['train'])
-    chexpert_train = datasets.ImageFolder(real_chexpert_train_path,
+    chexpert_train = datasets.ImageFolder(constants.REAL_CHEXPERT_TRAIN_PATH,
                                           transform['train'])
-    mimic_test = datasets.ImageFolder(real_mimic_test_path,
+    mimic_test = datasets.ImageFolder(constants.REAL_MIMIC_TEST_PATH,
                                       transform['test'])
-    chexpert_test = datasets.ImageFolder(real_chexpert_test_path,
+    chexpert_test = datasets.ImageFolder(constants.REAL_CHEXPERT_TEST_PATH,
                                          transform['test'])
 
     # Define classifier, criterion, and optimizer
     if args.film and not args.add_in_film:
         if args.replace_BN != 'none':
-            model = FiLMedResNetBN(hidden_size=args.hidden_size,
-                                   replace_mode=args.replace_BN)
+            if args.replace_BN == 'initial':
+                model = FiLMedResNetInitialLayers(hidden_size=args.hidden_size)
+            else:
+                model = FiLMedResNetBN(hidden_size=args.hidden_size,
+                                       replace_mode=args.replace_BN,
+                                       replace_layers=args.replace_layers,
+                                       bn_replace=args.bn_replace)
         else:
             model = FiLMedResNetModular(hidden_size=args.hidden_size,
                                         film_layers=args.film_layers)
     else:
-        model = ResNetClassifier(hidden_size=args.hidden_size)
+        model = ResNetClassifier(hidden_size=args.hidden_size,
+                                 resnet=args.resnet)
     model = model.to(device)
     criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     optimizer = torch.optim.SGD(
