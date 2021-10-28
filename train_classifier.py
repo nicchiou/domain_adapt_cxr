@@ -17,7 +17,7 @@ from models.film import (FiLMedResNetBN, FiLMedResNetFineTune,
 from models.resnet import ResNetClassifier
 from utils import constants
 from utils.adjustments import freeze_layers, remove_dropout_layers
-from utils.data_sampler import get_subset_indices
+from utils.data_sampler import get_subset_indices, get_train_valid_indices
 from utils.utils import deterministic
 
 
@@ -160,10 +160,13 @@ def train(args: argparse.Namespace, da_phase: str, model: torch.nn.Module,
     trial_results['final_train_acc'] = final_train_acc
     trial_results['final_valid_acc'] = epoch_acc
 
+    # Save final model weights
+    final_model = copy.deepcopy(model)
+
     # Load best model weights
     model.load_state_dict(best_model)
 
-    return model, trial_results
+    return model, final_model, trial_results
 
 
 def test(args: argparse.Namespace, model: torch.nn.Module,
@@ -239,7 +242,7 @@ if __name__ == '__main__':
     parser.add_argument('--load_trained_model', action='store_true')
     parser.add_argument('--model_path', type=str, default=None)
     parser.add_argument('--num_source_epochs', type=int, default=80)
-    parser.add_argument('--num_target_epochs', type=int, default=500)
+    parser.add_argument('--num_target_epochs', type=int, default=120)
     parser.add_argument('--source_lr', type=float, default=0.001)
     parser.add_argument('--target_lr', type=float, default=0.0003)
     parser.add_argument('--source_batch_size', type=int, default=16)
@@ -249,6 +252,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_sampler_seed', type=int, default=8)
     parser.add_argument('--n_source_samples', type=int, default=20000)
     parser.add_argument('--n_target_samples', type=int, default=20)
+    parser.add_argument('--n_valid_samples', type=int, default=500)
     parser.add_argument('--early_stop', action='store_true')
     parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--freeze', action='store_true')
@@ -261,7 +265,7 @@ if __name__ == '__main__':
                         help='options include combinations of 1, 2, and 3')
     parser.add_argument('--add_in_film', action='store_true',
                         help='adds FiLM layers only for the fine-tuning phase')
-    parser.add_argument('--replace_BN', type=str, default='none',
+    parser.add_argument('--replace_bn', type=str, default='none',
                         help='options to replace BN layers in the ResNet: '
                         'none (default), sparse (every block), all '
                         '(every bottleneck), custom (specify replace_layers '
@@ -283,7 +287,7 @@ if __name__ == '__main__':
         if not os.path.isdir(exp_dir):
             raise OSError('Specified directory does not exist!')
     else:  # Otherwise, create a new dir
-        exp_dir = os.path.join('experiments', f'{args.exp_dir}')
+        exp_dir = os.path.join('experiments', args.exp_dir)
         os.makedirs(exp_dir, exist_ok=True)
     with open(os.path.join(exp_dir, f'args_{args.iter_idx}.json'), 'w') as f:
         json.dump(args.__dict__, f, indent=4)
@@ -326,12 +330,12 @@ if __name__ == '__main__':
 
     # Define classifier, criterion, and optimizer
     if args.film and not args.add_in_film:
-        if args.replace_BN != 'none':
-            if args.replace_BN == 'initial':
+        if args.replace_bn != 'none':
+            if args.replace_bn == 'initial':
                 model = FiLMedResNetInitialLayers(hidden_size=args.hidden_size)
             else:
                 model = FiLMedResNetBN(hidden_size=args.hidden_size,
-                                       replace_mode=args.replace_BN,
+                                       replace_mode=args.replace_bn,
                                        replace_layers=args.replace_layers,
                                        bn_replace=args.bn_replace)
         else:
@@ -377,13 +381,13 @@ if __name__ == '__main__':
     if args.load_trained_model:  # Load existing trained model
         model.load_state_dict(torch.load(args.model_path, map_location=device))
     else:  # Train on source data
-        model, source_results = train(args, 'source', model, criterion,
-                                      optimizer, lr_scheduler, dataloaders,
-                                      device)
-        mimic_test_results = test(args, model, criterion, mimic_test_loader,
-                                  device)
-        chexpert_test_results = test(args, model, criterion,
-                                     chexpert_test_loader, device)
+        model, _, source_results = train(
+            args, 'source', model, criterion, optimizer, lr_scheduler,
+            dataloaders, device)
+        mimic_test_results = test(
+            args, model, criterion, mimic_test_loader, device)
+        chexpert_test_results = test(
+            args, model, criterion, chexpert_test_loader, device)
         source_results.update(
             {f'mimic_{k}': v for k, v in mimic_test_results.items()})
         source_results.update(
@@ -406,7 +410,7 @@ if __name__ == '__main__':
     # Freeze parameters or adjust layers as specified
     if args.add_in_film:
         kwargs = {'hidden_size': args.hidden_size,
-                  'replace_mode': args.replace_BN}
+                  'replace_mode': args.replace_bn}
         model = FiLMedResNetFineTune(pretrained=model,
                                      new_model_class=FiLMedResNetBN, **kwargs)
         model.to(device)
@@ -423,16 +427,17 @@ if __name__ == '__main__':
         optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
         verbose=True)
 
-    # Select a stratified subset of the training dataset to use
-    subset_idx = get_subset_indices(mimic_train, args.n_target_samples,
-                                    args.data_sampler_seed)
-    subset = torch.utils.data.Subset(mimic_train, subset_idx)
+    # Select stratified subsets to use for training (variable over iterations)
+    # and validation (fixed over iterations)
+    train_idx, valid_idx = get_train_valid_indices(
+        mimic_train, args.n_target_samples, args.n_valid_samples,
+        args.train_seed)
+    train_dataset = torch.utils.data.Subset(mimic_train, train_idx)
+    valid_dataset = torch.utils.data.Subset(mimic_train, valid_idx)
+    assert len(train_dataset) == args.n_target_samples
+    assert len(valid_dataset) == args.n_valid_samples
 
-    # Split into train and validation sets and create PyTorch Dataloaders
-    train_dataset, valid_dataset = torch.utils.data.random_split(
-        subset,
-        [int(np.floor(0.8 * len(subset))), int(np.ceil(0.2 * len(subset)))],
-        generator=torch.Generator().manual_seed(args.train_seed))
+    # Create PyTorch Dataloaders
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.target_batch_size, shuffle=True,
         drop_last=True)
@@ -445,17 +450,25 @@ if __name__ == '__main__':
     dataloaders = {'train': train_loader, 'valid': valid_loader}
 
     # Train on target data
-    model, target_results = train(args, 'target', model, criterion, optimizer,
-                                  lr_scheduler, dataloaders, device)
-    mimic_test_results = test(args, model, criterion, mimic_test_loader,
-                              device)
-    chexpert_test_results = test(args, model, criterion, chexpert_test_loader,
-                                 device)
+    model, final_model, target_results = train(
+        args, 'target', model, criterion, optimizer, lr_scheduler, dataloaders,
+        device)
+    mimic_test_results = test(
+        args, model, criterion, mimic_test_loader, device)
+    chexpert_test_results = test(
+        args, model, criterion, chexpert_test_loader, device)
     target_results.update(
-        {f'mimic_{k}': v for k, v in mimic_test_results.items()})
+        {f'mimic_best_{k}': v for k, v in mimic_test_results.items()})
     target_results.update(
-        {f'chexpert_{k}': v for k, v in chexpert_test_results.items()}
-    )
+        {f'chexpert_best_{k}': v for k, v in chexpert_test_results.items()})
+    mimic_test_results = test(
+        args, final_model, criterion, mimic_test_loader, device)
+    chexpert_test_results = test(
+        args, final_model, criterion, chexpert_test_loader, device)
+    target_results.update(
+        {f'mimic_final_{k}': v for k, v in mimic_test_results.items()})
+    target_results.update(
+        {f'chexpert_final_{k}': v for k, v in chexpert_test_results.items()})
     target_results_df = pd.DataFrame(columns=list(target_results.keys()))
     target_results_df = target_results_df.append(target_results,
                                                  ignore_index=True)
@@ -464,3 +477,6 @@ if __name__ == '__main__':
         index=False)
     torch.save(model.state_dict(),
                os.path.join(exp_dir, f'target_checkpoint_{args.iter_idx}.pt'))
+    torch.save(final_model.state_dict(),
+               os.path.join(exp_dir,
+                            f'target_checkpoint_final_{args.iter_idx}.pt'))
