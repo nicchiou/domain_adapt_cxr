@@ -257,8 +257,8 @@ if __name__ == '__main__':
     parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('-l', '--fine_tune_layers', nargs='+',
-                        help='options include resnet_fc, linear, bn_sparse, '
-                        'and bn_all')
+                        help='options include resnet_fc, linear, bn_initial, '
+                        'bn_sparse, and bn_all')
     parser.add_argument('--film', action='store_true')
     parser.add_argument('--film_layers', type=int, nargs='+',
                         default=[3],

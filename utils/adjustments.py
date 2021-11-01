@@ -31,7 +31,10 @@ def freeze_layers(args: argparse.Namespace, model: torch.nn.Module):
             model.linear.bias.requires_grad = True
 
         # Allow fine-tuning of batch norm layers
-        if 'bn_sparse' in args.fine_tune_layers:
+        if 'bn_initial' in args.fine_tune_layers:
+            if 'resnet.bn1' in name:
+                param.requires_grad = True
+        elif 'bn_sparse' in args.fine_tune_layers:
             if 'resnet.layer1.2.bn3' in name:
                 param.requires_grad = True
             if 'resnet.layer2.7.bn3' in name:
