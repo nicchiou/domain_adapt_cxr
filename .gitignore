@@ -3,21 +3,10 @@
 __pycache__/
 
 sample_notebooks/
-experiments/old_results/
-
-!experiments/baseline
-experiments/baseline/*
-!experiments/baseline/*.ipynb
-
-!experiments/combined
-experiments/combined/*
-!experiments/combined/*.ipynb
-
-!experiments/reverse
-experiments/reverse/*
-!experiments/reverse/*.ipynb
 
 interactive.sub
 jobs/*
 !jobs/model_scripts/
 !jobs/batch_job.sub
+
+*.egg-info
