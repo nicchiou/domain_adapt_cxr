@@ -18,8 +18,6 @@ experiments/reverse/*
 !experiments/reverse/*.ipynb
 
 interactive.sub
-*.pt
-*.egg-info
-*.log
-*.stdout
-*.stderr
+jobs/*
+!jobs/model_scripts/
+!jobs/batch_job.sub

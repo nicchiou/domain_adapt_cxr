@@ -1,7 +1,7 @@
-Executable   = batch_jobs/fine_tune.sh
-Log          = batch_jobs/logs/fine_tune.log
-Output       = batch_jobs/logs/fine_tune.stdout
-Error        = batch_jobs/logs/fine_tune.stderr
+Executable   = jobs/disable_source_stats_all.sh
+Log          = jobs/logs/disable_source_stats_all.log
+Output       = jobs/logs/disable_source_stats_all.stdout
+Error        = jobs/logs/disable_source_stats_all.stderr
 notify_user  = nschiou2@illinois.edu
 notification = Always
 getenv       = True

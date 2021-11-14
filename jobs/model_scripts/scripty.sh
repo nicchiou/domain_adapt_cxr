@@ -13,7 +13,6 @@ train_seeds=(8 16 31)
 for i in ${!n_target_samples[@]}; do
 for value in {0..2}; do
   pipenv run python ./train_classifier.py \
-  --early_stop \
   --n_target_samples ${n_target_samples[$i]} \
   --source_batch_size $src_batch_size \
   --target_batch_size $tgt_batch_size \
