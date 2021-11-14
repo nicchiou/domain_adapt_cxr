@@ -16,7 +16,9 @@ from models.film import (FiLMedResNetBN, FiLMedResNetFineTune,
                          FiLMedResNetInitialLayers, FiLMedResNetModular)
 from models.resnet import ResNetClassifier
 from utils import constants
-from utils.adjustments import freeze_layers, remove_dropout_layers
+from utils.adjustments import (disable_track_running_stats,
+                               enable_track_running_stats, freeze_layers,
+                               remove_dropout_layers)
 from utils.data_sampler import get_subset_indices, get_train_valid_indices
 from utils.utils import deterministic
 
@@ -129,10 +131,10 @@ def train(args: argparse.Namespace, da_phase: str, model: torch.nn.Module,
             # Save the best model
             if phase == 'valid' and epoch_acc > best_acc:
                 best_acc = epoch_acc
-            if phase == 'valid' and epoch_loss < best_loss:
-                best_loss = epoch_loss
                 best_model = copy.deepcopy(model.state_dict())
                 epochs_no_improve = 0
+            if phase == 'valid' and epoch_loss < best_loss:
+                best_loss = epoch_loss
             elif phase == 'valid' and epoch > 39:
                 epochs_no_improve += 1
                 if epochs_no_improve >= args.patience and args.early_stop:
@@ -253,12 +255,13 @@ if __name__ == '__main__':
     parser.add_argument('--n_source_samples', type=int, default=20000)
     parser.add_argument('--n_target_samples', type=int, default=20)
     parser.add_argument('--n_valid_samples', type=int, default=500)
+    parser.add_argument('--valid_fraction', type=float, default=None)
     parser.add_argument('--early_stop', action='store_true')
     parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--freeze', action='store_true')
     parser.add_argument('-l', '--fine_tune_layers', nargs='+',
                         help='options include resnet_fc, linear, bn_initial, '
-                        'bn_sparse, and bn_all')
+                        'bn_3-1, bn_sparse, and bn_all')
     parser.add_argument('--film', action='store_true')
     parser.add_argument('--film_layers', type=int, nargs='+',
                         default=[3],
@@ -277,6 +280,18 @@ if __name__ == '__main__':
                         '3.1 is the first 12, 3.2 is the second 12, etc.')
     parser.add_argument('--bn_replace', type=int, default=[3], nargs='+',
                         help='BN number in bottleneck module to replace')
+    parser.add_argument('--disable_source_stats_layers', type=str,
+                        default='none', help='options to disable tracking '
+                        'running stats for batch-norm layers: none (default), '
+                        'all (every bottleneck), and 3.1')
+    parser.add_argument('--disable_target_stats_layers', type=str,
+                        default='none', help='options to disable tracking '
+                        'running stats for batch-norm layers: none (default), '
+                        'all (every bottleneck), and 3.1')
+    parser.add_argument('--enable_target_stats_layers', type=str,
+                        default='none', help='options to enable tracking '
+                        'running stats for batch-norm layers: none (default), '
+                        'all (every bottleneck), and 3.1')
     parser.add_argument('--remove_dropout', action='store_true',
                         help='removes dropout layers during fine-tuning')
 
@@ -357,6 +372,10 @@ if __name__ == '__main__':
     # Control deterministic behavior
     deterministic(args.train_seed)
 
+    # Disable tracking of running stats for batch normalization
+    if args.disable_source_stats_layers != 'none':
+        disable_track_running_stats(args.disable_source_stats_layers, model)
+
     # Select a stratified subset of the training dataset to use
     subset_idx = get_subset_indices(chexpert_train, args.n_source_samples,
                                     args.data_sampler_seed)
@@ -407,6 +426,14 @@ if __name__ == '__main__':
     # Control deterministic behavior
     deterministic(args.train_seed)
 
+    # Disable tracking of running stats for batch normalization
+    if args.disable_target_stats_layers != 'none':
+        disable_track_running_stats(args.disable_target_stats_layers, model)
+
+    # Enable tracking of running stats for batch normalization
+    if args.enable_target_stats_layers != 'none':
+        enable_track_running_stats(args.enable_target_stats_layers, model)
+
     # Freeze parameters or adjust layers as specified
     if args.add_in_film:
         kwargs = {'hidden_size': args.hidden_size,
@@ -427,15 +454,27 @@ if __name__ == '__main__':
         optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
         verbose=True)
 
+    # Select a stratified subset of the training dataset to use
+    if args.valid_fraction is not None:
+        subset_idx = get_subset_indices(mimic_train, args.n_target_samples,
+                                        args.data_sampler_seed)
+        subset = torch.utils.data.Subset(mimic_train, subset_idx)
+        # Split into train and validation sets and create PyTorch Dataloaders
+        train_dataset, valid_dataset = torch.utils.data.random_split(
+            subset,
+            [int(np.ceil((1 - args.valid_fraction) * len(subset))),
+             int(np.floor(args.valid_fraction * len(subset)))],
+            generator=torch.Generator().manual_seed(args.train_seed))
     # Select stratified subsets to use for training (variable over iterations)
     # and validation (fixed over iterations)
-    train_idx, valid_idx = get_train_valid_indices(
-        mimic_train, args.n_target_samples, args.n_valid_samples,
-        args.train_seed)
-    train_dataset = torch.utils.data.Subset(mimic_train, train_idx)
-    valid_dataset = torch.utils.data.Subset(mimic_train, valid_idx)
-    assert len(train_dataset) == args.n_target_samples
-    assert len(valid_dataset) == args.n_valid_samples
+    else:
+        train_idx, valid_idx = get_train_valid_indices(
+            mimic_train, args.n_target_samples, args.n_valid_samples,
+            args.train_seed)
+        train_dataset = torch.utils.data.Subset(mimic_train, train_idx)
+        valid_dataset = torch.utils.data.Subset(mimic_train, valid_idx)
+        assert len(train_dataset) == args.n_target_samples
+        assert len(valid_dataset) == args.n_valid_samples
 
     # Create PyTorch Dataloaders
     train_loader = torch.utils.data.DataLoader(
