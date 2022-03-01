@@ -7,6 +7,5 @@ sample_notebooks/
 interactive.sub
 jobs/*
 !jobs/model_scripts/
-!jobs/batch_job.sub
 
 *.egg-info
