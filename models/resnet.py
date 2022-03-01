@@ -32,3 +32,22 @@ class ResNetClassifier(nn.Module):
         x = self.leaky_relu(self.linear(x))
 
         return x
+
+
+def ResNetOrig(resnet='resnet152'):
+    """
+    Initializs a pre-trained ResNet on ImageNet (same as torchvision.models).
+    """
+    if resnet == 'resnet18':
+        model = models.resnet18(pretrained=True)
+    elif resnet == 'resnet34':
+        model = models.resnet34(pretrained=True)
+    elif resnet == 'resnet50':
+        model = models.resnet50(pretrained=True)
+    elif resnet == 'resnet101':
+        model = models.resnet101(pretrained=True)
+    elif resnet == 'resnet152':
+        model = models.resnet152(pretrained=True)
+    num_feats = model.fc.in_features
+    model.fc = nn.Linear(num_feats, 1)
+    return model
