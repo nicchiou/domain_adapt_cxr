@@ -19,6 +19,7 @@ pyarrow = "*"
 fastparquet = "*"
 jupyterlab = "*"
 h5py = "*"
+umap-learn = "*"
 
 [dev-packages]
 flake8 = "*"
