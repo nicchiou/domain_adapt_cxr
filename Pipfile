@@ -6,24 +6,24 @@ name = "pypi"
 [packages]
 jupyter = "*"
 notebook = "*"
+jupyterlab = "*"
 numpy = "*"
 pandas = "*"
+matplotlib = "*"
+seaborn = "*"
 tqdm = "*"
 easydict = "*"
 sklearn = "*"
-matplotlib = "*"
-seaborn = "*"
-torch = "==1.8.0"
-torchvision = "==0.9.0"
 pyarrow = "*"
 fastparquet = "*"
-jupyterlab = "*"
 h5py = "*"
 umap-learn = "*"
-
-[dev-packages]
+torch = "==1.8.0"
+torchvision = "==0.9.0"
 flake8 = "*"
 pylint = "*"
 
+[dev-packages]
+
 [requires]
-python_version = "3.6"
+python_version = "3.7"
