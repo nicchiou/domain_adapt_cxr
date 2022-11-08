@@ -25,19 +25,12 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
     Trains classifier module on the provided data set.
 
     :param args: training arguments
-    :type args: argparse.Namespace
     :param model: model to train
-    :type model: torch.nn.Module
     :param criterion: criterion used to train model
-    :type criterion: torch.nn.Module
     :param optimizer: optimizer used to train model
-    :type optimizer: torch.optim
     :param scheduler: learning rate scheduler
-    :type scheduler: torch.optim.lr_scheduler
     :param dataloaders: train and valid loaders
-    :type dataloaders: dict
     :param device: device to train model on
-    :type device: str
     :return: trained nn.Module and training statistics/metrics
     :rtype: Tuple[nn.Module, dict]
     """
@@ -153,15 +146,10 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     Evaluates classifier module on the provided data set.
 
     :param args: training arguments
-    :type args: argparse.Namespace
     :param model: model to train
-    :type model: torch.nn.Module
     :param criterion: criterion used to train model
-    :type criterion: torch.nn.Module
     :param test_loader: test loader
-    :type test_loader: torch.utils.data.DataLoader
     :param device: device to train model on
-    :type device: str
     :return: evaluation statistics/metrics
     :rtype: dict
     """

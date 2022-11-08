@@ -25,19 +25,12 @@ def train(args: argparse.Namespace, da_phase: str, model: torch.nn.Module,
     Trains classifier module on the provided data set.
 
     :param args: training arguments
-    :type args: argparse.Namespace
     :param model: model to train
-    :type model: torch.nn.Module
     :param criterion: criterion used to train model
-    :type criterion: torch.nn.Module
     :param optimizer: optimizer used to train model
-    :type optimizer: torch.optim
     :param scheduler: learning rate scheduler
-    :type scheduler: torch.optim.lr_scheduler
     :param dataloaders: train and valid loaders
-    :type dataloaders: dict
     :param device: device to train model on
-    :type device: str
     :return: trained nn.Module and training statistics/metrics
     :rtype: Tuple[nn.Module, dict]
     """
@@ -173,15 +166,10 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     Evaluates classifier module on the provided data set.
 
     :param args: training arguments
-    :type args: argparse.Namespace
     :param model: model to train
-    :type model: torch.nn.Module
     :param criterion: criterion used to train model
-    :type criterion: torch.nn.Module
     :param test_loader: test loader
-    :type test_loader: torch.utils.data.DataLoader
     :param device: device to train model on
-    :type device: str
     :return: evaluation statistics/metrics
     :rtype: dict
     """
@@ -320,9 +308,9 @@ if __name__ == '__main__':
     deterministic(args.train_seed)
 
     # Select a stratified subset of the training dataset to use
-    subset_idx = get_subset_indices(mimic_train, args.n_source_samples,
+    subset_idx = get_subset_indices(chexpert_train, args.n_source_samples,
                                     args.data_sampler_seed)
-    subset = torch.utils.data.Subset(mimic_train, subset_idx)
+    subset = torch.utils.data.Subset(chexpert_train, subset_idx)
 
     # Split into train and validation sets and create PyTorch Dataloaders
     train_dataset, valid_dataset = torch.utils.data.random_split(
@@ -391,9 +379,9 @@ if __name__ == '__main__':
 
     # Select a stratified subset of the training dataset to use
     if args.valid_fraction is not None:
-        subset_idx = get_subset_indices(chexpert_train, args.n_target_samples,
+        subset_idx = get_subset_indices(mimic_train, args.n_target_samples,
                                         args.data_sampler_seed)
-        subset = torch.utils.data.Subset(chexpert_train, subset_idx)
+        subset = torch.utils.data.Subset(mimic_train, subset_idx)
         # Split into train and validation sets and create PyTorch Dataloaders
         train_dataset, valid_dataset = torch.utils.data.random_split(
             subset,
@@ -404,10 +392,10 @@ if __name__ == '__main__':
     # and validation (fixed over iterations)
     else:
         train_idx, valid_idx = get_train_valid_indices(
-            chexpert_train, args.n_target_samples, args.n_valid_samples,
+            mimic_train, args.n_target_samples, args.n_valid_samples,
             args.train_seed)
-        train_dataset = torch.utils.data.Subset(chexpert_train, train_idx)
-        valid_dataset = torch.utils.data.Subset(chexpert_train, valid_idx)
+        train_dataset = torch.utils.data.Subset(mimic_train, train_idx)
+        valid_dataset = torch.utils.data.Subset(mimic_train, valid_idx)
         assert len(train_dataset) == args.n_target_samples
         assert len(valid_dataset) == args.n_valid_samples
 

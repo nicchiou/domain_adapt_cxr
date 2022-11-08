@@ -12,14 +12,8 @@ import torch
 from sklearn.metrics import roc_auc_score
 from torchvision import datasets, transforms
 
-from models.film import (FiLMedResNetBN, FiLMedResNetFineTune,
-                         FiLMedResNetInitialLayers, FiLMedResNetModular)
-from models.resnet import ResNetClassifier
+from models.resnet import ResNetOrig
 from utils import constants
-from utils.adjustments import (disable_track_running_stats,
-                               enable_track_running_stats, freeze_layers,
-                               remove_dropout_layers, reset_bn_running_stats,
-                               update_momentum_term)
 from utils.data_sampler import get_subset_indices, get_train_valid_indices
 from utils.utils import deterministic
 
@@ -31,19 +25,12 @@ def train(args: argparse.Namespace, da_phase: str, model: torch.nn.Module,
     Trains classifier module on the provided data set.
 
     :param args: training arguments
-    :type args: argparse.Namespace
     :param model: model to train
-    :type model: torch.nn.Module
     :param criterion: criterion used to train model
-    :type criterion: torch.nn.Module
     :param optimizer: optimizer used to train model
-    :type optimizer: torch.optim
     :param scheduler: learning rate scheduler
-    :type scheduler: torch.optim.lr_scheduler
     :param dataloaders: train and valid loaders
-    :type dataloaders: dict
     :param device: device to train model on
-    :type device: str
     :return: trained nn.Module and training statistics/metrics
     :rtype: Tuple[nn.Module, dict]
     """
@@ -179,15 +166,10 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
     Evaluates classifier module on the provided data set.
 
     :param args: training arguments
-    :type args: argparse.Namespace
     :param model: model to train
-    :type model: torch.nn.Module
     :param criterion: criterion used to train model
-    :type criterion: torch.nn.Module
     :param test_loader: test loader
-    :type test_loader: torch.utils.data.DataLoader
     :param device: device to train model on
-    :type device: str
     :return: evaluation statistics/metrics
     :rtype: dict
     """
@@ -241,18 +223,17 @@ if __name__ == '__main__':
 
     parser.add_argument('--exp_dir', type=str, default='test')
     parser.add_argument('--iter_idx', type=int, default=0)
-    parser.add_argument('--resnet', type=str, default='resnet152')
+    parser.add_argument('--resnet', type=str, default='resnet50')
     parser.add_argument('--load_trained_model', action='store_true')
     parser.add_argument('--model_path', type=str, default=None)
-    parser.add_argument('--num_source_epochs', type=int, default=80)
-    parser.add_argument('--num_target_epochs', type=int, default=120)
+    parser.add_argument('--num_source_epochs', type=int, default=100)
+    parser.add_argument('--num_target_epochs', type=int, default=100)
     parser.add_argument('--source_lr', type=float, default=0.001)
     parser.add_argument('--target_lr', type=float, default=0.0003)
-    parser.add_argument('--source_batch_size', type=int, default=16)
-    parser.add_argument('--target_batch_size', type=int, default=16)
+    parser.add_argument('--source_batch_size', type=int, default=32)
+    parser.add_argument('--target_batch_size', type=int, default=32)
     parser.add_argument('--no_drop_last', action='store_false')
     parser.add_argument('--train_seed', type=int, default=8)
-    parser.add_argument('--hidden_size', type=int, default=1024)
     parser.add_argument('--data_sampler_seed', type=int, default=8)
     parser.add_argument('--n_source_samples', type=int, default=20000)
     parser.add_argument('--n_target_samples', type=int, default=20)
@@ -261,52 +242,6 @@ if __name__ == '__main__':
     parser.add_argument('--early_stop', action='store_true')
     parser.add_argument('--patience', type=int, default=30)
     parser.add_argument('--freeze', action='store_true')
-    parser.add_argument('-l', '--fine_tune_layers', nargs='+',
-                        help='options include resnet_fc, linear, bn_initial, '
-                        'bn_3-1, bn_sparse, and bn_all')
-    parser.add_argument('--film', action='store_true')
-    parser.add_argument('--film_layers', type=int, nargs='+',
-                        default=[3],
-                        help='options include combinations of 1, 2, and 3')
-    parser.add_argument('--add_in_film', action='store_true',
-                        help='adds FiLM layers only for the fine-tuning phase')
-    parser.add_argument('--replace_bn', type=str, default='none',
-                        help='options to replace BN layers in the ResNet: '
-                        'none (default), sparse (every block), all '
-                        '(every bottleneck), custom (specify replace_layers '
-                        'and bn_replace numbers), or initial (first BN after '
-                        'the input)')
-    parser.add_argument('--replace_layers', type=float, nargs='+', default=[],
-                        help='ResNet layer blocks to replace BNs with FiLM. '
-                        'Note: 3.0 replaces all bottleneck BNs in layer3 '
-                        '3.1 is the first 12, 3.2 is the second 12, etc.')
-    parser.add_argument('--bn_replace', type=int, default=[3], nargs='+',
-                        help='BN number in bottleneck module to replace')
-    parser.add_argument('--reset_pretrained_stats', action='store_true',
-                        help='resets batch norm running stats after imagenet '
-                        'pre-training')
-    parser.add_argument('--reset_source_stats', action='store_true',
-                        help='resets batch norm running stats after source '
-                        'domain training')
-    parser.add_argument('--disable_source_stats_layers', type=str,
-                        default='none', help='options to disable tracking '
-                        'running stats for batch-norm layers: none (default), '
-                        'all (every bottleneck), and 3.1')
-    parser.add_argument('--disable_target_stats_layers', type=str,
-                        default='none', help='options to disable tracking '
-                        'running stats for batch-norm layers: none (default), '
-                        'all (every bottleneck), and 3.1')
-    parser.add_argument('--enable_target_stats_layers', type=str,
-                        default='none', help='options to enable tracking '
-                        'running stats for batch-norm layers: none (default), '
-                        'all (every bottleneck), and 3.1')
-    parser.add_argument('--update_momentum_layers', type=str,
-                        default='none', help='options to update the momentum '
-                        'term for batch-norm layers: none (default), '
-                        'all (every bottleneck), and 3.1')
-    parser.add_argument('--new_bn_momentum', type=float, default=0.8)
-    parser.add_argument('--remove_dropout', action='store_true',
-                        help='removes dropout layers during fine-tuning')
 
     args = parser.parse_args()
     timestamp = time.strftime("%Y-%m-%d-%H%M")
@@ -357,28 +292,13 @@ if __name__ == '__main__':
                                          transform['test'])
 
     # Define classifier, criterion, and optimizer
-    if args.film and not args.add_in_film:
-        if args.replace_bn != 'none':
-            if args.replace_bn == 'initial':
-                model = FiLMedResNetInitialLayers(hidden_size=args.hidden_size)
-            else:
-                model = FiLMedResNetBN(hidden_size=args.hidden_size,
-                                       replace_mode=args.replace_bn,
-                                       replace_layers=args.replace_layers,
-                                       bn_replace=args.bn_replace)
-        else:
-            model = FiLMedResNetModular(hidden_size=args.hidden_size,
-                                        film_layers=args.film_layers)
-    else:
-        model = ResNetClassifier(hidden_size=args.hidden_size,
-                                 resnet=args.resnet)
-        if args.reset_pretrained_stats:
-            reset_bn_running_stats(model)
+    model = ResNetOrig(resnet=args.resnet)
+    print(model, flush=True)
     model = model.to(device)
     criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
-    optimizer = torch.optim.SGD(
+    optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.source_lr, momentum=0.9)
+        lr=args.source_lr)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
         verbose=True)
@@ -387,14 +307,10 @@ if __name__ == '__main__':
     # Control deterministic behavior
     deterministic(args.train_seed)
 
-    # Disable tracking of running stats for batch normalization
-    if args.disable_source_stats_layers != 'none':
-        disable_track_running_stats(args.disable_source_stats_layers, model)
-
     # Select a stratified subset of the training dataset to use
-    subset_idx = get_subset_indices(chexpert_train, args.n_source_samples,
+    subset_idx = get_subset_indices(mimic_train, args.n_source_samples,
                                     args.data_sampler_seed)
-    subset = torch.utils.data.Subset(chexpert_train, subset_idx)
+    subset = torch.utils.data.Subset(mimic_train, subset_idx)
 
     # Split into train and validation sets and create PyTorch Dataloaders
     train_dataset, valid_dataset = torch.utils.data.random_split(
@@ -441,48 +357,31 @@ if __name__ == '__main__':
     # Control deterministic behavior
     deterministic(args.train_seed)
 
-    # Disable tracking of running stats for batch normalization
-    if args.disable_target_stats_layers != 'none':
-        disable_track_running_stats(args.disable_target_stats_layers, model)
-
-    # Enable tracking of running stats for batch normalization
-    if args.enable_target_stats_layers != 'none':
-        enable_track_running_stats(args.enable_target_stats_layers, model)
-
-    # Update the momentum term used for running statistics
-    if args.update_momentum_layers != 'none':
-        update_momentum_term(args.update_momentum_layers, args.new_bn_momentum,
-                             model)
-
-    # Reset running batch normalization running statistics
-    if args.reset_source_stats:
-        reset_bn_running_stats(model)
-
     # Freeze parameters or adjust layers as specified
-    if args.add_in_film:
-        kwargs = {'hidden_size': args.hidden_size,
-                  'replace_mode': args.replace_bn}
-        model = FiLMedResNetFineTune(pretrained=model,
-                                     new_model_class=FiLMedResNetBN, **kwargs)
-        model.to(device)
     if args.freeze:
-        freeze_layers(args, model)
-    if args.remove_dropout:
-        remove_dropout_layers(model)
+        for name, param in model.named_parameters():
+            param.requires_grad = False
+            model.fc.weight.requires_grad = True
+            model.fc.bias.requires_grad = True
+        print('Fine-tuning the following parameters...', flush=True)
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                print(f'\t{name}', flush=True)
+        print(flush=True)
 
     # Re-define optimizer and lr_scheduler to update parameters optimized
-    optimizer = torch.optim.SGD(
+    optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.target_lr, momentum=0.9)
+        lr=args.target_lr)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-10,
         verbose=True)
 
     # Select a stratified subset of the training dataset to use
     if args.valid_fraction is not None:
-        subset_idx = get_subset_indices(mimic_train, args.n_target_samples,
+        subset_idx = get_subset_indices(chexpert_train, args.n_target_samples,
                                         args.data_sampler_seed)
-        subset = torch.utils.data.Subset(mimic_train, subset_idx)
+        subset = torch.utils.data.Subset(chexpert_train, subset_idx)
         # Split into train and validation sets and create PyTorch Dataloaders
         train_dataset, valid_dataset = torch.utils.data.random_split(
             subset,
@@ -493,10 +392,10 @@ if __name__ == '__main__':
     # and validation (fixed over iterations)
     else:
         train_idx, valid_idx = get_train_valid_indices(
-            mimic_train, args.n_target_samples, args.n_valid_samples,
+            chexpert_train, args.n_target_samples, args.n_valid_samples,
             args.train_seed)
-        train_dataset = torch.utils.data.Subset(mimic_train, train_idx)
-        valid_dataset = torch.utils.data.Subset(mimic_train, valid_idx)
+        train_dataset = torch.utils.data.Subset(chexpert_train, train_idx)
+        valid_dataset = torch.utils.data.Subset(chexpert_train, valid_idx)
         assert len(train_dataset) == args.n_target_samples
         assert len(valid_dataset) == args.n_valid_samples
 
