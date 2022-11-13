@@ -3,9 +3,8 @@
 __pycache__/
 
 sample_notebooks/
-
-interactive.sub
-jobs/*
-!jobs/model_scripts/
+results/
+build/
+jobs/logs/
 
 *.egg-info
