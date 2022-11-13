@@ -17,6 +17,7 @@ from torchvision import transforms
 from utils import constants
 from utils.dataset import MIDRCDataset
 from utils.utils import deterministic
+from utils.fine_tune import freeze_params
 
 
 def train(args: argparse.Namespace, model: torch.nn.Module,
@@ -155,6 +156,8 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
                     best_valid_metrics['loss'] = epoch_loss
                     best_valid_metrics['acc'] = epoch_acc
                     best_valid_metrics['auc'] = epoch_auc
+                    best_valid_metric = \
+                        best_valid_metrics[args.early_stopping_metric]
                     # Save best model as a deepcopy
                     best_model = copy.deepcopy(model.state_dict())
                     best_model_epoch = epoch
@@ -313,6 +316,13 @@ if __name__ == '__main__':
                         help='Dimension of the classification linear layer '
                         'after ResNet.')
 
+    # Fine-tuning
+    parser.add_argument('--load_pretrained', type=str, default=None,
+                        help='Load a pre-trained model from the given path.')
+    parser.add_argument('--fine_tune_modules', type=str, nargs='+',
+                        default=None,
+                        help='Names of ResNet modules to fine-tune.')
+
     # Optimization and model-fitting hyperparameters
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=0.001)
@@ -336,6 +346,10 @@ if __name__ == '__main__':
     FLAGS = parser.parse_args()
     timestamp = time.strftime('%Y-%m-d-%H%M')
     exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.exp_dir)
+
+    # Basic assertions
+    if FLAGS.load_pretrained is not None:
+        assert FLAGS.domain == 'target'
 
     # Set up logging
     os.makedirs(FLAGS.log_dir, exist_ok=True)
@@ -425,6 +439,12 @@ if __name__ == '__main__':
     # Define classifier, criterion, and optimizer
     deterministic(FLAGS.seed)
     net = ResNetClassifier(hidden_size=FLAGS.hidden_size, resnet=FLAGS.resnet)
+    # Load source-trained model and fine-tune a subset of parameters
+    if FLAGS.load_pretrained is not None:
+        net.load_state_dict(torch.load(FLAGS.load_pretrained,
+                                       map_location=torch_device),
+                            strict=False)
+        freeze_params(net, FLAGS.fine_tune_modules)
     logging.info(net)
     if torch.cuda.device_count() > 1:
         net = torch.nn.DataParallel(net)
