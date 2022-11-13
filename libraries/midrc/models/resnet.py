@@ -1,13 +1,17 @@
+"""ResNet wrapper modules for torchvision models."""
 from torch import nn
 from torchvision import models
 
 
 class ResNetClassifier(nn.Module):
+    """Loads an ImageNet pre-trained ResNet.
+
+    Replaces the final linear layer for a binary prediction task.
+
+    Args:
+      resnet: ResNet architecture to use
     """
-    Pre-trained ResNet on ImageNet with one added hidden layer, normalization,
-    and activation.
-    """
-    def __init__(self, hidden_size=1024, resnet='resnet152'):
+    def __init__(self, hidden_size=1024, resnet='resnet50'):
         super().__init__()
 
         if resnet == 'resnet18':
@@ -29,25 +33,6 @@ class ResNetClassifier(nn.Module):
     def forward(self, x):
 
         x = self.leaky_relu(self.resnet(x))
-        x = self.leaky_relu(self.linear(x))
+        x = self.linear(x)
 
         return x
-
-
-def ResNetOrig(resnet='resnet152'):
-    """
-    Initializs a pre-trained ResNet on ImageNet (same as torchvision.models).
-    """
-    if resnet == 'resnet18':
-        model = models.resnet18(pretrained=True)
-    elif resnet == 'resnet34':
-        model = models.resnet34(pretrained=True)
-    elif resnet == 'resnet50':
-        model = models.resnet50(pretrained=True)
-    elif resnet == 'resnet101':
-        model = models.resnet101(pretrained=True)
-    elif resnet == 'resnet152':
-        model = models.resnet152(pretrained=True)
-    num_feats = model.fc.in_features
-    model.fc = nn.Linear(num_feats, 1)
-    return model
