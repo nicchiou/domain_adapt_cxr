@@ -7,17 +7,19 @@ import json
 import logging
 import os
 import time
+from collections import OrderedDict
 from typing import Dict
 
 import torch
+from models.film import FiLMedResNetReplaceBN
 from models.resnet import ResNetClassifier
 from sklearn.metrics import roc_auc_score
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from utils import constants
 from utils.dataset import MIDRCDataset
-from utils.utils import deterministic
 from utils.fine_tune import freeze_params
+from utils.utils import deterministic
 
 
 def train(args: argparse.Namespace, model: torch.nn.Module,
@@ -286,8 +288,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
+    parser.add_argument('--root_dir', type=str, required=True)
     parser.add_argument('--exp_dir', type=str, required=True)
     parser.add_argument('--log_dir', type=str, required=True)
+    parser.add_argument('--approach', type=str, required=True)
     parser.add_argument('--gpus', type=str, nargs='+', required=True)
 
     # Dataset
@@ -315,19 +319,33 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_size', type=int, default=1024,
                         help='Dimension of the classification linear layer '
                         'after ResNet.')
+    parser.add_argument('--film_mode', type=str, default=None, choices=['all'])
+    parser.add_argument('--bn_replace', type=int, nargs='+', default=None,
+                        choices=[0, 1, 2, 3])
 
-    # Fine-tuning
+    # Fine-tuning and/or inference
     parser.add_argument('--load_pretrained', type=str, default=None,
                         help='Load a pre-trained model from the given path.')
     parser.add_argument('--fine_tune_modules', type=str, nargs='+',
                         default=None,
                         help='Names of ResNet modules to fine-tune.')
+    parser.add_argument('--inference_only', action='store_true', default=False)
 
     # Optimization and model-fitting hyperparameters
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--seed', type=int, default=0)
+
+    # Learning rate scheduler
+    parser.add_argument('--decay_factor', type=float, default=0.3,
+                        help='Factor to muptiply the current learning rate by '
+                        'when decreasing the learning rate after a plateau.')
+    parser.add_argument('--patience', type=int, default=10,
+                        help='Number of epochs to wait before decaying '
+                        'the learning rate.')
+    parser.add_argument('--min_lr', type=float, default=1e-8,
+                        help='Lower-bound on learning rate decay.')
 
     # Model selection
     parser.add_argument('--early_stop', type=int, default=-1,
@@ -345,16 +363,18 @@ if __name__ == '__main__':
 
     FLAGS = parser.parse_args()
     timestamp = time.strftime('%Y-%m-d-%H%M')
-    exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.exp_dir)
+    exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.root_dir, FLAGS.exp_dir)
 
     # Basic assertions
     if FLAGS.load_pretrained is not None:
-        assert FLAGS.domain == 'target'
+        assert FLAGS.domain == 'target'  # Load pre-trained model to fine-tune
+        if 'film' in FLAGS.load_pretrained:
+            assert FLAGS.film_mode is not None and FLAGS.bn_replace is not None
 
     # Set up logging
-    os.makedirs(FLAGS.log_dir, exist_ok=True)
+    os.makedirs(os.path.join(FLAGS.log_dir, FLAGS.root_dir), exist_ok=True)
     logging.basicConfig(
-        filename=os.path.join(FLAGS.log_dir,
+        filename=os.path.join(FLAGS.log_dir, FLAGS.root_dir,
                               f'{FLAGS.exp_dir}_{FLAGS.seed}.log'),
         filemode='w',
         format='%(asctime)s\t %(levelname)s:\t%(message)s',
@@ -438,12 +458,24 @@ if __name__ == '__main__':
 
     # Define classifier, criterion, and optimizer
     deterministic(FLAGS.seed)
-    net = ResNetClassifier(hidden_size=FLAGS.hidden_size, resnet=FLAGS.resnet)
+    if FLAGS.film_mode is not None:
+        net = FiLMedResNetReplaceBN(replace_mode=FLAGS.film_mode,
+                                    replace_layers=None,
+                                    bn_replace=FLAGS.bn_replace,
+                                    hidden_size=FLAGS.hidden_size,
+                                    resnet=FLAGS.resnet)
+    else:
+        net = ResNetClassifier(hidden_size=FLAGS.hidden_size,
+                               resnet=FLAGS.resnet)
     # Load source-trained model and fine-tune a subset of parameters
     if FLAGS.load_pretrained is not None:
-        net.load_state_dict(torch.load(FLAGS.load_pretrained,
-                                       map_location=torch_device),
-                            strict=False)
+        state_dict = torch.load(FLAGS.load_pretrained,
+                                map_location=torch_device)
+        # Modify state_dict to remove DataParallel module wrapper
+        new_state_dict = OrderedDict(
+            [(key.split('module.')[-1], state_dict[key])
+             for key in state_dict])
+        net.load_state_dict(new_state_dict)
         freeze_params(net, FLAGS.fine_tune_modules)
     logging.info(net)
     if torch.cuda.device_count() > 1:
@@ -453,13 +485,14 @@ if __name__ == '__main__':
     torch_optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, net.parameters()), lr=FLAGS.lr)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        torch_optimizer, factor=0.3, patience=10, threshold=1e-4, min_lr=1e-8,
-        verbose=True)
+        torch_optimizer, factor=FLAGS.decay_factor, patience=FLAGS.patience,
+        threshold=1e-4, min_lr=FLAGS.min_lr, verbose=True)
 
     # Train and evaluate model
-    train_state_results, net = train(FLAGS, net, torch_criterion,
-                                     torch_optimizer, lr_scheduler,
-                                     train_state_dataloaders, torch_device)
+    if not FLAGS.inference_only:
+        train_state_results, net = train(FLAGS, net, torch_criterion,
+                                        torch_optimizer, lr_scheduler,
+                                        train_state_dataloaders, torch_device)
     train_state_test_results = test(FLAGS, net, torch_criterion,
                                     train_state_dataloaders['test'],
                                     torch_device)
@@ -479,6 +512,7 @@ if __name__ == '__main__':
               'wt', encoding='utf-8') as f:
         json.dump(train_state_results, f, indent=4)
     results = {
+        'approach': FLAGS.approach,
         'domain': FLAGS.domain,
         'train_state': FLAGS.train_state,
         'test_state': FLAGS.test_state,
