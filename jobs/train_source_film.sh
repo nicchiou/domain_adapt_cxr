@@ -26,7 +26,8 @@ python ~/domain_adapt_cxr/approaches/midrc/train.py \
     --domain source \
     --resnet resnet152 \
     --hidden_size 1024 \
-    --film_mode all \
+    --film \
+    --block_replace 1 2 3 4 \
     --bn_replace 0 1 2 3 \
     --epochs 100 \
     --lr 0.001 \
@@ -57,7 +58,8 @@ python ~/domain_adapt_cxr/approaches/midrc/train.py \
     --domain source \
     --resnet resnet152 \
     --hidden_size 1024 \
-    --film_mode all \
+    --film \
+    --block_replace 1 2 3 4 \
     --bn_replace 0 1 2 3 \
     --load_pretrained $model_fname \
     --inference_only \

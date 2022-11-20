@@ -1,11 +1,13 @@
+"""Base FiLM module and modified ResNets with FiLM layer replacements."""
 import copy
 
 import torch
 from torch import nn
+from torch.nn import Module
 from torchvision import models
 
 
-class FiLM(nn.Module):
+class FiLM(Module):
     """FiLM module.
 
     Applies Feature-wise Linear Modulation to the incoming data as described
@@ -15,6 +17,7 @@ class FiLM(nn.Module):
     def __init__(self, output_size):
         super().__init__()
 
+        self.num_features = output_size
         self.register_parameter(name='gamma',
                                 param=nn.Parameter(torch.ones(output_size)))
         self.register_parameter(name='beta',
@@ -32,8 +35,11 @@ class FiLM(nn.Module):
         beta = self.beta.unsqueeze(0).unsqueeze(2).unsqueeze(3).expand_as(x)
         return (gamma * x) + beta
 
+    def extra_repr(self) -> str:
+        return f'{self.num_features}'
 
-class FiLMedResNetBeforeBlock(nn.Module):
+
+class FiLMedResNetBeforeBlock(Module):
     """ResNet with added FiLM layers between ResNet blocks.
 
     ResNet with FiLM layers introduced before each new block in the ResNet
@@ -108,33 +114,30 @@ class FiLMedResNetBeforeBlock(nn.Module):
         return x
 
 
-class FiLMedResNetReplaceBN(nn.Module):
+class FiLMedResNetReplaceBN(Module):
     """ResNet with FiLM layers replacing batch normalization layers.
 
     ResNet with FiLM layers introduced as replacements to some of the ResNet's
     batch normalization layers.
 
-    :param replace_mode: sparse (replace the last bottleneck unit's last BN
-                         (bn3) in each block), all (replace all bottleneck
-                         units' last BN (bn3) layer), or custom (replace
-                         certain last BN (bn3) layers in consecutive
-                         bottlneck units within block 3)
-    :param replace_layers: list of custom blocks' BN layers to replace
-    :param bn_replace: list of custom bottleneck units' BN layers to replace
-                       within a block
+    :param block_replace: list of custom blocks' batch norm layers to replace
+    :param bn_replace: list of individual batch norm layers to replace within a
+                       block
     :param hidden_size: dimension of final linear layer
     :param resnet: ResNet architecture
+    :param replace_downsample: whether to replace the batch norm layer in the
+                               downsampling step
     """
-    def __init__(self, replace_mode, replace_layers, bn_replace,
-                 hidden_size=1024, resnet='resnet50'):
+    def __init__(self, block_replace, bn_replace, hidden_size=1024,
+                 resnet='resnet50', replace_downsample=False):
         super().__init__()
 
-        # Must specify blocks and bottleneck units to replace
-        if replace_mode == 'custom':
-            assert replace_layers and bn_replace
-        else:
-            assert not replace_layers
+        # Must specify blocks and batch norm layers to replace
+        assert bn_replace is not None
+        if set(bn_replace) != {0}:
+            assert block_replace is not None
 
+        # Get ResNet backbone
         if resnet == 'resnet18':
             self.resnet = models.resnet18(pretrained=True)
         elif resnet == 'resnet34':
@@ -146,95 +149,54 @@ class FiLMedResNetReplaceBN(nn.Module):
         elif resnet == 'resnet152':
             self.resnet = models.resnet152(pretrained=True)
 
-        # Get size of inputs to next block
-        layer2_input = self.resnet.layer2[0].conv1.in_channels
-        layer3_input = self.resnet.layer3[0].conv1.in_channels
-        layer4_input = self.resnet.layer4[0].conv1.in_channels
-
-        if replace_mode == 'sparse':
-            # Replace layer1 final bn3
-            self.resnet.layer1._modules['2']._modules['bn3'] = \
-                FiLM(output_size=layer2_input)
-            # Replace layer2 final bn3
-            self.resnet.layer2._modules['3']._modules['bn3'] = \
-                FiLM(output_size=layer3_input)
-            # Replace layer3 final bn3
-            self.resnet.layer3._modules['5']._modules['bn3'] = \
-                FiLM(output_size=layer4_input)
-
-        elif replace_mode == 'all':
-            for name, layer in self.named_modules():
-                # Replace all batch norm layers before a ReLU with FiLM
-                if isinstance(layer, torch.nn.BatchNorm2d):
-                    try:  # Check if batch norm is in one of the main layers
-                        _, layer_num, block_num, bn_num = name.split('.')
-                        if int(bn_num[-1]) in bn_replace:
+        # Iterate through ResNet modules and replace batch norm layers with FiLM
+        for name, layer in self.named_modules():
+            if isinstance(layer, torch.nn.BatchNorm2d):
+                # Replace the batch norm layer before any of the ResNet blocks
+                if name == 'resnet.bn1':
+                    if 0 in bn_replace:
+                        output_size = self.resnet.bn1.weight.size(0)
+                        self.resnet.bn1 = FiLM(output_size=output_size)
+                # Otherwise, replace batch norm layers within the ResNet blocks
+                else:
+                    parsed_name = name.split('.')
+                    # Layer is a numbered batch norm layer in a bottleneck unit
+                    if len(parsed_name) == 4:
+                        _, layer_num, bottleneck_num, bn_num = parsed_name
+                        if (int(layer_num[-1]) in block_replace and
+                            int(bn_num[-1]) in bn_replace):
                             output_size = self.resnet._modules[
                                 layer_num]._modules[
-                                block_num]._modules[bn_num].weight.size(0)
+                                    bottleneck_num]._modules[
+                                        bn_num].weight.size(0)
                             self.resnet._modules[layer_num]._modules[
-                                block_num]._modules[bn_num] = \
+                                bottleneck_num]._modules[bn_num] = \
                                 FiLM(output_size=output_size)
-                    except ValueError:  # Catch exceptions from parsing name
-                        continue
-
-        elif replace_mode == 'custom':
-            for name, layer in self.named_modules():
-                # Replace batch norm layers before a ReLU that match the
-                # specified pattern.
-                # User specifies main layer, or sub-layer deliniations for
-                # main layer 3 (i.e. 3.1, 3.2, 3.3).
-                if isinstance(layer, torch.nn.BatchNorm2d):
-                    try:
-                        _, layer_num, block_num, bn_num = name.split('.')
-                        if int(layer_num[-1]) in \
-                                [int(x) for x in replace_layers] and \
-                                int(bn_num[-1]) in bn_replace:
-                            if 3.1 in replace_layers and \
-                                    int(block_num) >= 0 and \
-                                    int(block_num) < 2:
-                                output_size = self.resnet._modules[
-                                    layer_num]._modules[
-                                    block_num]._modules[bn_num].weight.size(0)
-                                self.resnet._modules[layer_num]._modules[
-                                    block_num]._modules[bn_num] = \
-                                    FiLM(output_size=output_size)
-                            if 3.2 in replace_layers and \
-                                    int(block_num) >= 2 and \
-                                    int(block_num) < 4:
-                                output_size = self.resnet._modules[
-                                    layer_num]._modules[
-                                    block_num]._modules[bn_num].weight.size(0)
-                                self.resnet._modules[layer_num]._modules[
-                                    block_num]._modules[bn_num] = \
-                                    FiLM(output_size=output_size)
-                            if 3.3 in replace_layers and \
-                                    int(block_num) >= 4 and \
-                                    int(block_num) < 6:
-                                output_size = self.resnet._modules[
-                                    layer_num]._modules[
-                                    block_num]._modules[bn_num].weight.size(0)
-                                self.resnet._modules[layer_num]._modules[
-                                    block_num]._modules[bn_num] = \
-                                    FiLM(output_size=output_size)
-                            if float(layer_num[-1]) in replace_layers:
-                                output_size = self.resnet._modules[
-                                    layer_num]._modules[
-                                    block_num]._modules[bn_num].weight.size(0)
-                                self.resnet._modules[layer_num]._modules[
-                                    block_num]._modules[bn_num] = \
-                                    FiLM(output_size=output_size)
-                    except ValueError:
-                        continue
+                    # Layer is a batch norm layer in the downsampling step
+                    elif len(parsed_name) == 5:
+                        _, layer_num, bottleneck_num, _, _ = parsed_name
+                        if replace_downsample:
+                            output_size = self.resnet._modules[
+                                layer_num]._modules[bottleneck_num]._modules[
+                                    'downsample']._modules['1'].weight.size(0)
+                            self.resnet._modules[layer_num]._modules[
+                                bottleneck_num]._modules['downsample']._modules[
+                                    '1'] = FiLM(output_size=output_size)
 
         num_feats = self.resnet.fc.in_features
-        self.resnet.fc = nn.Linear(num_feats, 1)
+        self.resnet.fc = nn.Linear(num_feats, hidden_size)
+        self.linear = nn.Linear(hidden_size, 1)
+        self.leaky_relu = nn.LeakyReLU(negative_slope=0.1)
 
     def forward(self, x):
-        return self.resnet(x)
+
+        x = self.leaky_relu(self.resnet(x))
+        x = self.linear(x)
+
+        return x
 
 
-class FiLMedResNetFineTune(nn.Module):
+class FiLMedResNetFineTune(Module):
     """ResNet-50 with FiLM layers replacing BN layers during fine-tuning.
 
     ResNet-50 with newly-initialized FiLM layers introduced only during the
@@ -257,7 +219,7 @@ class FiLMedResNetFineTune(nn.Module):
 
         # Avoid parameter override of FiLM layers with BN weights/bias
         other_state = pretrained.state_dict()
-        if isinstance(new_model, FiLMedResNetBN):
+        if isinstance(new_model, FiLMedResNetReplaceBN):
             for name, param in other_state.items():
                 if isinstance(param, nn.Parameter):
                     param = param.data
@@ -275,39 +237,3 @@ class FiLMedResNetFineTune(nn.Module):
 
     def forward(self, x):
         return self.resnet(x)
-
-
-class FiLMedResNetInitialLayers(nn.Module):
-    """ResNet-50 with FiLM layer replacing initial BN layer.
-
-    ResNet-50 with FiLM layers introduced near the input layer, replacing the
-    first batch norm layer (bn1).
-    """
-    def __init__(self):
-        super().__init__()
-
-        self.resnet = models.resnet50(pretrained=True)
-
-        out_channels = self.resnet.conv1.out_channels
-        self.film = FiLM(output_size=out_channels)
-
-        num_feats = self.resnet.fc.in_features
-        self.resnet.fc = nn.Linear(num_feats, 1)
-
-    def forward(self, x):
-
-        x = self.resnet.conv1(x)
-        x = self.film(x)
-        x = self.resnet.relu(x)
-        x = self.resnet.maxpool(x)
-
-        x = self.resnet.layer1(x)
-        x = self.resnet.layer2(x)
-        x = self.resnet.layer3(x)
-        x = self.resnet.layer4(x)
-        x = self.resnet.avgpool(x)
-        x = x.squeeze()
-
-        x = self.resnet.fc(x)
-
-        return x

@@ -319,9 +319,17 @@ if __name__ == '__main__':
     parser.add_argument('--hidden_size', type=int, default=1024,
                         help='Dimension of the classification linear layer '
                         'after ResNet.')
-    parser.add_argument('--film_mode', type=str, default=None, choices=['all'])
+    parser.add_argument('--film', action='store_true', default=False)
+    parser.add_argument('--block_replace', type=int, nargs='+', default=None,
+                        choices=[1, 2, 3, 4],
+                        help='ResNet blocks to replace.')
     parser.add_argument('--bn_replace', type=int, nargs='+', default=None,
-                        choices=[0, 1, 2, 3])
+                        choices=[0, 1, 2, 3],
+                        help='Batch norm layers to replace.')
+    parser.add_argument('--replace_downsample', action='store_true',
+                        default=False,
+                        help='Replaces the batch norm layer in the downsampling'
+                        ' step.')
 
     # Fine-tuning and/or inference
     parser.add_argument('--load_pretrained', type=str, default=None,
@@ -368,7 +376,8 @@ if __name__ == '__main__':
     # Basic assertions
     if FLAGS.load_pretrained is not None:
         if 'film' in FLAGS.load_pretrained:
-            assert FLAGS.film_mode is not None and FLAGS.bn_replace is not None
+            assert (FLAGS.film and FLAGS.block_replace is not None and
+                    FLAGS.bn_replace is not None)
 
     # Set up logging
     os.makedirs(os.path.join(FLAGS.log_dir, FLAGS.root_dir), exist_ok=True)
@@ -457,12 +466,12 @@ if __name__ == '__main__':
 
     # Define classifier, criterion, and optimizer
     deterministic(FLAGS.seed)
-    if FLAGS.film_mode is not None:
-        net = FiLMedResNetReplaceBN(replace_mode=FLAGS.film_mode,
-                                    replace_layers=None,
+    if FLAGS.film:
+        net = FiLMedResNetReplaceBN(block_replace=FLAGS.block_replace,
                                     bn_replace=FLAGS.bn_replace,
                                     hidden_size=FLAGS.hidden_size,
-                                    resnet=FLAGS.resnet)
+                                    resnet=FLAGS.resnet,
+                                    replace_downsample=FLAGS.replace_downsample)
     else:
         net = ResNetClassifier(hidden_size=FLAGS.hidden_size,
                                resnet=FLAGS.resnet)
@@ -481,6 +490,7 @@ if __name__ == '__main__':
     if torch.cuda.device_count() > 1:
         net = torch.nn.DataParallel(net)
     net.to(torch_device)
+
     torch_criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     torch_optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, net.parameters()), lr=FLAGS.lr)
