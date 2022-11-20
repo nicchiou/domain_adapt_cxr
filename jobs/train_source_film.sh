@@ -1,26 +1,30 @@
 #!/bin/bash
 
+root_dir='/dfs/scratch0/nicchiou/domain_adapt_cxr'
+res_dir='early_stop_auc/film_all/'
 log_dir='jobs/logs/'
+approach='FiLM_All_Source_ERM'
 
 seed=(0 1 2 3 4)
-test_state=('CA' 'IN' 'NC' 'TX')
+test_state=('IN' 'NC' 'TX')
 
 for i in ${!seed[@]}; do
-for j in ${!test_state[@]}; do
 
-exp_dir='film_resnet50_hidden-1024_source-IL_target-'${test_state[$j]}
+exp_dir='resnet152_source-IL_target-CA_ns-all_nt-0'
 
 echo $exp_dir
 
 python ~/domain_adapt_cxr/approaches/midrc/train.py \
+    --root_dir $res_dir \
     --exp_dir $exp_dir \
     --log_dir $log_dir \
-    --gpus 0 2 \
+    --approach $approach \
+    --gpus 0 1 2 3 \
     --train_state IL \
-    --test_state ${test_state[$j]} \
+    --test_state CA \
     --n_samples -1 \
     --domain source \
-    --resnet resnet50 \
+    --resnet resnet152 \
     --hidden_size 1024 \
     --film_mode all \
     --bn_replace 0 1 2 3 \
@@ -28,6 +32,41 @@ python ~/domain_adapt_cxr/approaches/midrc/train.py \
     --lr 0.001 \
     --batch_size 128 \
     --seed ${seed[$i]} \
+    --early_stopping_metric auc \
+    --min_epochs 10 \
+    --verbose;
+
+model_path=$root_dir'/results/midrc/'$res_dir$exp_dir
+model_fname=$model_path'/source_checkpoint_'${seed[$i]}'.pt'
+
+for j in ${!test_state[@]}; do
+
+exp_dir='resnet152_source-IL_target-'${test_state[$j]}'_ns-all_nt-0'
+
+echo $exp_dir
+
+python ~/domain_adapt_cxr/approaches/midrc/train.py \
+    --root_dir $res_dir \
+    --exp_dir $exp_dir \
+    --log_dir $log_dir \
+    --approach $approach \
+    --gpus 0 1 2 3 \
+    --train_state IL \
+    --test_state ${test_state[$j]} \
+    --n_samples -1 \
+    --domain source \
+    --resnet resnet152 \
+    --hidden_size 1024 \
+    --film_mode all \
+    --bn_replace 0 1 2 3 \
+    --load_pretrained $model_fname \
+    --inference_only \
+    --epochs 100 \
+    --lr 0.001 \
+    --batch_size 128 \
+    --seed ${seed[$i]} \
+    --early_stopping_metric auc \
+    --min_epochs 10 \
     --verbose;
 
 done
