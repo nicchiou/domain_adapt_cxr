@@ -367,7 +367,6 @@ if __name__ == '__main__':
 
     # Basic assertions
     if FLAGS.load_pretrained is not None:
-        assert FLAGS.domain == 'target'  # Load pre-trained model to fine-tune
         if 'film' in FLAGS.load_pretrained:
             assert FLAGS.film_mode is not None and FLAGS.bn_replace is not None
 
@@ -476,7 +475,8 @@ if __name__ == '__main__':
             [(key.split('module.')[-1], state_dict[key])
              for key in state_dict])
         net.load_state_dict(new_state_dict)
-        freeze_params(net, FLAGS.fine_tune_modules)
+        if FLAGS.domain == 'target':
+            freeze_params(net, FLAGS.fine_tune_modules)
     logging.info(net)
     if torch.cuda.device_count() > 1:
         net = torch.nn.DataParallel(net)
@@ -493,6 +493,8 @@ if __name__ == '__main__':
         train_state_results, net = train(FLAGS, net, torch_criterion,
                                         torch_optimizer, lr_scheduler,
                                         train_state_dataloaders, torch_device)
+    else:  # Training results do not exist for pre-trained inference-only models
+        train_state_results = {}
     train_state_test_results = test(FLAGS, net, torch_criterion,
                                     train_state_dataloaders['test'],
                                     torch_device)
