@@ -501,8 +501,8 @@ if __name__ == '__main__':
     # Train and evaluate model
     if not FLAGS.inference_only:
         train_state_results, net = train(FLAGS, net, torch_criterion,
-                                        torch_optimizer, lr_scheduler,
-                                        train_state_dataloaders, torch_device)
+                                         torch_optimizer, lr_scheduler,
+                                         train_state_dataloaders, torch_device)
     else:  # Training results do not exist for pre-trained inference-only models
         train_state_results = {}
     train_state_test_results = test(FLAGS, net, torch_criterion,
