@@ -14,7 +14,7 @@ train_state=('CA' 'IN' 'TX')
 for i in ${!seed[@]}; do
     for j in ${!train_state[@]}; do
 
-    exp_dir=$resnet'_source-IL_target-'${train_state[$j]}'_ns-all_nt-0'
+    exp_dir=$resnet'_source-'${train_state[$j]}'_target-IL_ns-all_nt-0'
 
     echo $exp_dir
 
