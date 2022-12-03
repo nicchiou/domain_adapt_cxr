@@ -13,9 +13,7 @@ seed=(0 1 2 3 4)
 test_state=('IN' 'NC' 'TX')
 
 for i in ${!seed[@]}; do
-
     exp_dir=$resnet'_source-IL_target-CA_ns-all_nt-0'
-
     echo $exp_dir
 
     python ~/domain_adapt_cxr/approaches/midrc/train.py \
@@ -36,15 +34,13 @@ for i in ${!seed[@]}; do
         --seed ${seed[$i]} \
         --early_stopping_metric auc \
         --min_epochs 10 \
-        --verbose;
+        --verbose
 
     model_path=$root_dir'/results/midrc/'$res_dir$exp_dir
     model_fname=$model_path'/source_checkpoint_'${seed[$i]}'.pt'
 
     for j in ${!test_state[@]}; do
-
         exp_dir=$resnet'_source-IL_target-'${test_state[$j]}'_ns-all_nt-0'
-
         echo $exp_dir
 
         python ~/domain_adapt_cxr/approaches/midrc/train.py \
@@ -67,7 +63,6 @@ for i in ${!seed[@]}; do
             --seed ${seed[$i]} \
             --early_stopping_metric auc \
             --min_epochs 10 \
-            --verbose;
-
+            --verbose
     done
 done
