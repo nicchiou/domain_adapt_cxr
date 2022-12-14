@@ -14,7 +14,7 @@ test_state=('CA' 'IN' 'NC' 'TX')
 
 for i in ${!seed[@]}; do
     for j in ${!test_state[@]}; do
-        exp_dir=$resnet'_combined-IL-'${test_state[$j]}'_ns-all_nt-all'
+        exp_dir=$resnet'_combined_IL_'${test_state[$j]}'_ns-all_nt-all'
         echo $exp_dir
 
         python ~/domain_adapt_cxr/approaches/midrc/train_combined.py \
