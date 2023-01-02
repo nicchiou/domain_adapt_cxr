@@ -4,6 +4,7 @@ __pycache__/
 
 sample_notebooks/
 results/
+!notebooks/results
 build/
 jobs/logs/
 
