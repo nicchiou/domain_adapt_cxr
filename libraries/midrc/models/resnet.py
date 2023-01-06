@@ -1,9 +1,10 @@
 """ResNet wrapper modules for torchvision models."""
 from torch import nn
+from torch.nn import Module
 from torchvision import models
 
 
-class ResNetClassifier(nn.Module):
+class ResNetClassifier(Module):
     """Loads an ImageNet pre-trained ResNet.
 
     Replaces the final linear layer for a binary prediction task.
@@ -11,7 +12,7 @@ class ResNetClassifier(nn.Module):
     Args:
       resnet: ResNet architecture to use
     """
-    def __init__(self, hidden_size=1024, resnet='resnet50'):
+    def __init__(self, hidden_size: int = 1024, resnet: str = 'resnet50'):
         super().__init__()
 
         if resnet == 'resnet18':
