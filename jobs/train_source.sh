@@ -3,21 +3,21 @@
 root_dir='/dfs/scratch0/nicchiou/domain_adapt_cxr'
 res_dir='early_stop_auc/resnet/'
 log_dir='jobs/logs/'
-approach='Source_ERM'
+approach='Source_ERM_ResNet'
 
 resnet='resnet152'
 hidden_size=1024
 
 gpus='0 1 2 3'
 seed=(0 1 2 3 4)
-test_state=('IN' 'NC' 'TX')
+test_state=('IN' 'TX')
 
 for i in ${!seed[@]}; do
-    exp_dir=$resnet'_source-IL_target-CA_ns-all_nt-0'
+    exp_dir=$resnet'_source-IL_target-CA_ft-all_ns-all_nt-0'
     echo $exp_dir
 
     python ~/domain_adapt_cxr/approaches/midrc/train.py \
-        --root_dir $res_dir \
+        --res_dir $res_dir \
         --exp_dir $exp_dir \
         --log_dir $log_dir \
         --approach $approach \
@@ -40,11 +40,11 @@ for i in ${!seed[@]}; do
     model_fname=$model_path'/source_checkpoint_'${seed[$i]}'.pt'
 
     for j in ${!test_state[@]}; do
-        exp_dir=$resnet'_source-IL_target-'${test_state[$j]}'_ns-all_nt-0'
+        exp_dir=$resnet'_source-IL_target-'${test_state[$j]}'_ft-all_ns-all_nt-0'
         echo $exp_dir
 
         python ~/domain_adapt_cxr/approaches/midrc/train.py \
-            --root_dir $res_dir \
+            --res_dir $res_dir \
             --exp_dir $exp_dir \
             --log_dir $log_dir \
             --approach $approach \
