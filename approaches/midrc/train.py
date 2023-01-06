@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from utils import constants
 from utils.dataset import MIDRCDataset
-from utils.fine_tune import freeze_params
+from utils.fine_tune import get_modules_from_aliases, freeze_params
 from utils.utils import deterministic
 
 
@@ -288,7 +288,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--root_dir', type=str, required=True)
+    parser.add_argument('--res_dir', type=str, required=True)
     parser.add_argument('--exp_dir', type=str, required=True)
     parser.add_argument('--log_dir', type=str, required=True)
     parser.add_argument('--approach', type=str, required=True)
@@ -322,21 +322,35 @@ if __name__ == '__main__':
     parser.add_argument('--film', action='store_true', default=False)
     parser.add_argument('--block_replace', type=int, nargs='+', default=None,
                         choices=[1, 2, 3, 4],
-                        help='ResNet blocks to replace.')
+                        help='ResNet blocks within which batch norm layers are '
+                        'replaced with FiLM layers.')
     parser.add_argument('--bn_replace', type=int, nargs='+', default=None,
                         choices=[0, 1, 2, 3],
-                        help='Batch norm layers to replace.')
+                        help='Numbered batch norm layers to replace with FiLM '
+                        'layers. Choices 1, 2, and 3 are within bottleneck '
+                        'blocks. Choice 0 represents the batch norm layer '
+                        'before any of the ResNet blocks.')
+    parser.add_argument('--final_bottleneck_replace', action='store_true',
+                        default=False,
+                        help='Replace only the batch norm layers in the final '
+                        'bottleneck unit of each specified block in '
+                        '`block_replace`.')
     parser.add_argument('--replace_downsample', action='store_true',
                         default=False,
                         help='Replaces the batch norm layer in the downsampling'
-                        ' step.')
+                        ' step of the ResNet.')
 
     # Fine-tuning and/or inference
     parser.add_argument('--load_pretrained', type=str, default=None,
                         help='Load a pre-trained model from the given path.')
     parser.add_argument('--fine_tune_modules', type=str, nargs='+',
                         default=None,
-                        help='Names of ResNet modules to fine-tune.')
+                        help='List of aliased ResNet modules to fine-tune.')
+    parser.add_argument('--final_bottleneck_fine_tune', action='store_true',
+                        default=False,
+                        help='Fine-tune only the batch norm layers in the '
+                        'final bottleneck unit of each specified block by '
+                        '`fine_tune_modules`.')
     parser.add_argument('--inference_only', action='store_true', default=False)
 
     # Optimization and model-fitting hyperparameters
@@ -358,8 +372,8 @@ if __name__ == '__main__':
     # Model selection
     parser.add_argument('--early_stop', type=int, default=-1,
                         help='Stops training early if the optimized '
-                        'performance metric does not improve after early_stop '
-                        'epochs.')
+                        'performance metric does not improve after '
+                        '`early_stop` number of epochs.')
     parser.add_argument('--early_stopping_metric', type=str, default='auc',
                         choices=['loss', 'acc', 'auc'])
     parser.add_argument('--min_epochs', type=int, default=0,
@@ -371,18 +385,35 @@ if __name__ == '__main__':
 
     FLAGS = parser.parse_args()
     timestamp = time.strftime('%Y-%m-d-%H%M')
-    exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.root_dir, FLAGS.exp_dir)
+    exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.res_dir, FLAGS.exp_dir)
 
     # Basic assertions
     if FLAGS.load_pretrained is not None:
         if 'film' in FLAGS.load_pretrained:
             assert (FLAGS.film and FLAGS.block_replace is not None and
-                    FLAGS.bn_replace is not None)
+                    FLAGS.bn_replace is not None), (
+                        'Must specify FiLM model type.')
+    if FLAGS.fine_tune_modules is not None:
+        if 'all' in FLAGS.fine_tune_modules:
+            assert len(FLAGS.fine_tune_modules) == 1, (
+                'Already fine-tuning all parameters.')
+        for alias in FLAGS.fine_tune_modules:
+            basic_check = alias in ['all', 'initial', 'clf']
+            block_check = True
+            if 'block' in alias:
+                split = alias.split('-')
+                block = int(split[0][-1])
+                block_check = block in {1, 2, 3, 4}
+                if len(split) == 2:
+                    batch_norm = split[1].strip('bn')
+                    for bn in batch_norm:
+                        block_check = block_check and int(bn) in {1, 2, 3}
+            assert basic_check or block_check, 'Alias not supported.'
 
     # Set up logging
-    os.makedirs(os.path.join(FLAGS.log_dir, FLAGS.root_dir), exist_ok=True)
+    os.makedirs(os.path.join(FLAGS.log_dir, FLAGS.res_dir), exist_ok=True)
     logging.basicConfig(
-        filename=os.path.join(FLAGS.log_dir, FLAGS.root_dir,
+        filename=os.path.join(FLAGS.log_dir, FLAGS.res_dir,
                               f'{FLAGS.exp_dir}_{FLAGS.seed}.log'),
         filemode='w',
         format='%(asctime)s\t %(levelname)s:\t%(message)s',
@@ -443,6 +474,7 @@ if __name__ == '__main__':
     }
 
     # Define PyTorch DataLoaders
+    deterministic(FLAGS.seed)
     train_state_dataloaders = {}
     for split in ['train', 'valid', 'test']:
         dataset = MIDRCDataset(
@@ -450,9 +482,10 @@ if __name__ == '__main__':
                          f'MIDRC_table_{FLAGS.train_state}_{split}.csv'),
             n_samples[split],
             transform=transform[split])
-        shuffle = bool(split == 'train')
+        is_train = bool(split == 'train')
         train_state_dataloaders[split] = DataLoader(
-            dataset, batch_size=FLAGS.batch_size, shuffle=shuffle)
+            dataset, batch_size=FLAGS.batch_size, shuffle=is_train,
+            drop_last=is_train)
         logging.info('Num. train state %s samples: %d', split, len(dataset))
 
     dataset = MIDRCDataset(
@@ -461,20 +494,24 @@ if __name__ == '__main__':
         n_samples['test'],
         transform=transform['test'])
     test_state_dataloader = DataLoader(
-        dataset, batch_size=FLAGS.batch_size, shuffle=False)
+        dataset, batch_size=FLAGS.batch_size, shuffle=False, drop_last=False)
     logging.info('Num. test state test samples: %d', len(dataset))
 
     # Define classifier, criterion, and optimizer
-    deterministic(FLAGS.seed)
     if FLAGS.film:
-        net = FiLMedResNetReplaceBN(block_replace=FLAGS.block_replace,
-                                    bn_replace=FLAGS.bn_replace,
-                                    hidden_size=FLAGS.hidden_size,
-                                    resnet=FLAGS.resnet,
-                                    replace_downsample=FLAGS.replace_downsample)
+        net = FiLMedResNetReplaceBN(
+            block_replace=FLAGS.block_replace,
+            bn_replace=FLAGS.bn_replace,
+            hidden_size=FLAGS.hidden_size,
+            resnet=FLAGS.resnet,
+            replace_downsample=FLAGS.replace_downsample,
+            final_bottleneck_only=FLAGS.final_bottleneck_replace
+        )
     else:
-        net = ResNetClassifier(hidden_size=FLAGS.hidden_size,
-                               resnet=FLAGS.resnet)
+        net = ResNetClassifier(
+            hidden_size=FLAGS.hidden_size,
+            resnet=FLAGS.resnet,
+        )
     # Load source-trained model and fine-tune a subset of parameters
     if FLAGS.load_pretrained is not None:
         state_dict = torch.load(FLAGS.load_pretrained,
@@ -485,12 +522,18 @@ if __name__ == '__main__':
              for key in state_dict])
         net.load_state_dict(new_state_dict)
         if FLAGS.domain == 'target':
-            freeze_params(net, FLAGS.fine_tune_modules)
+            modules = get_modules_from_aliases(
+                FLAGS.fine_tune_modules,
+                resnet=FLAGS.resnet,
+                final_bottleneck_only=FLAGS.final_bottleneck_fine_tune,
+            )
+            freeze_params(net, modules)
     logging.info(net)
     if torch.cuda.device_count() > 1:
         net = torch.nn.DataParallel(net)
     net.to(torch_device)
 
+    # Instantiate criterion, optimizer, and learning rate schedule
     torch_criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     torch_optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, net.parameters()), lr=FLAGS.lr)
@@ -498,13 +541,17 @@ if __name__ == '__main__':
         torch_optimizer, factor=FLAGS.decay_factor, patience=FLAGS.patience,
         threshold=1e-4, min_lr=FLAGS.min_lr, verbose=True)
 
-    # Train and evaluate model
+    # ========== TRAIN ==========
+    deterministic(FLAGS.seed)
     if not FLAGS.inference_only:
         train_state_results, net = train(FLAGS, net, torch_criterion,
                                          torch_optimizer, lr_scheduler,
                                          train_state_dataloaders, torch_device)
-    else:  # Training results do not exist for pre-trained inference-only models
+    else:
+        # Training results do not exist for pre-trained inference-only models
         train_state_results = {}
+
+    # ========= TEST ==========
     train_state_test_results = test(FLAGS, net, torch_criterion,
                                     train_state_dataloaders['test'],
                                     torch_device)
