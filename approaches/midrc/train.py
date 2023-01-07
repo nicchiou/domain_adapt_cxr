@@ -485,7 +485,7 @@ if __name__ == '__main__':
         is_train = bool(split == 'train')
         train_state_dataloaders[split] = DataLoader(
             dataset, batch_size=FLAGS.batch_size, shuffle=is_train,
-            drop_last=is_train)
+            drop_last=(is_train and FLAGS.n_samples > FLAGS.batch_size))
         logging.info('Num. train state %s samples: %d', split, len(dataset))
 
     dataset = MIDRCDataset(

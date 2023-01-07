@@ -3,17 +3,16 @@
 root_dir='/dfs/scratch0/nicchiou/domain_adapt_cxr'
 res_dir='early_stop_auc/resnet/'
 log_dir='jobs/logs/'
-approach='Fine_Tune'
+approach='Fine_Tune_ResNet'
 
 resnet='resnet152'
 hidden_size=1024
-model_path=$root_dir'/results/midrc/'$res_dir$resnet'_source-IL_target-CA_ns-all_nt-0'
+model_path=$root_dir'/results/midrc/'$res_dir$resnet'_source-IL_target-CA_ft-all_ns-all_nt-0'
 
 gpus='0 1 2 3'
 seed=(0 1 2 3 4)
-train_state=('CA' 'IN' 'NC' 'TX')
+train_state=('CA' 'IN' 'TX')
 n_samples=(20 50 100 200 300)
-batch_size=(4 8 16 32 64)
 
 for i in ${!seed[@]}; do
     for j in ${!train_state[@]}; do
@@ -23,7 +22,7 @@ for i in ${!seed[@]}; do
             echo $exp_dir
 
             python ~/domain_adapt_cxr/approaches/midrc/train.py \
-                --root_dir $res_dir \
+                --res_dir $res_dir \
                 --exp_dir $exp_dir \
                 --log_dir $log_dir \
                 --approach $approach \
@@ -35,13 +34,10 @@ for i in ${!seed[@]}; do
                 --resnet $resnet \
                 --hidden_size $hidden_size \
                 --load_pretrained $model_fname \
-                --fine_tune_modules \
-                    resnet.conv1 resnet.bn1 \
-                    resnet.layer1 resnet.layer2 resnet.layer3 resnet.layer4 \
-                    resnet.fc linear \
+                --fine_tune_modules all \
                 --epochs 100 \
                 --lr 0.0003 \
-                --batch_size ${batch_size[$k]} \
+                --batch_size 128 \
                 --seed ${seed[$i]} \
                 --early_stopping_metric auc \
                 --verbose
@@ -52,7 +48,7 @@ for i in ${!seed[@]}; do
         echo $exp_dir
 
         python ~/domain_adapt_cxr/approaches/midrc/train.py \
-            --root_dir $res_dir \
+            --res_dir $res_dir \
             --exp_dir $exp_dir \
             --log_dir $log_dir \
             --approach $approach \
@@ -64,13 +60,10 @@ for i in ${!seed[@]}; do
             --resnet $resnet \
             --hidden_size $hidden_size \
             --load_pretrained $model_fname \
-            --fine_tune_modules \
-                resnet.conv1 resnet.bn1 \
-                resnet.layer1 resnet.layer2 resnet.layer3 resnet.layer4 \
-                resnet.fc linear \
+            --fine_tune_modules all \
             --epochs 100 \
             --lr 0.0003 \
-            --batch_size 64 \
+            --batch_size 128 \
             --seed ${seed[$i]} \
             --early_stopping_metric auc \
             --verbose
