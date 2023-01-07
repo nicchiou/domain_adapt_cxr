@@ -10,7 +10,7 @@ hidden_size=1024
 
 gpus='0 1 2 3'
 seed=(0 1 2 3 4)
-test_state=('CA' 'IN' 'NC' 'TX')
+test_state=('CA' 'IN' 'TX')
 
 for i in ${!seed[@]}; do
     for j in ${!test_state[@]}; do
@@ -18,7 +18,7 @@ for i in ${!seed[@]}; do
         echo $exp_dir
 
         python ~/domain_adapt_cxr/approaches/midrc/train_combined.py \
-            --root_dir $res_dir \
+            --res_dir $res_dir \
             --exp_dir $exp_dir \
             --log_dir $log_dir \
             --approach $approach \

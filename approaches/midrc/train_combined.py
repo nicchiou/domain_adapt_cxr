@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import time
-from collections import OrderedDict
 from typing import Dict
 
 import torch
@@ -18,7 +17,6 @@ from torch.utils.data import ConcatDataset, DataLoader
 from torchvision import transforms
 from utils import constants
 from utils.dataset import MIDRCDataset
-from utils.fine_tune import freeze_params
 from utils.utils import deterministic
 
 
@@ -288,7 +286,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--root_dir', type=str, required=True)
+    parser.add_argument('--res_dir', type=str, required=True)
     parser.add_argument('--exp_dir', type=str, required=True)
     parser.add_argument('--log_dir', type=str, required=True)
     parser.add_argument('--approach', type=str, required=True)
@@ -322,22 +320,18 @@ if __name__ == '__main__':
     parser.add_argument('--film', action='store_true', default=False)
     parser.add_argument('--block_replace', type=int, nargs='+', default=None,
                         choices=[1, 2, 3, 4],
-                        help='ResNet blocks to replace.')
+                        help='ResNet blocks within which batch norm layers are '
+                        'replaced with FiLM layers.')
     parser.add_argument('--bn_replace', type=int, nargs='+', default=None,
                         choices=[0, 1, 2, 3],
-                        help='Batch norm layers to replace.')
+                        help='Numbered batch norm layers to replace with FiLM '
+                        'layers. Choices 1, 2, and 3 are within bottleneck '
+                        'blocks. Choice 0 represents the batch norm layer '
+                        'before any of the ResNet blocks.')
     parser.add_argument('--replace_downsample', action='store_true',
                         default=False,
                         help='Replaces the batch norm layer in the downsampling'
-                        ' step.')
-
-    # Fine-tuning and/or inference
-    parser.add_argument('--load_pretrained', type=str, default=None,
-                        help='Load a pre-trained model from the given path.')
-    parser.add_argument('--fine_tune_modules', type=str, nargs='+',
-                        default=None,
-                        help='Names of ResNet modules to fine-tune.')
-    parser.add_argument('--inference_only', action='store_true', default=False)
+                        ' step of the ResNet.')
 
     # Optimization and model-fitting hyperparameters
     parser.add_argument('--epochs', type=int, default=100)
@@ -350,8 +344,8 @@ if __name__ == '__main__':
                         help='Factor to muptiply the current learning rate by '
                         'when decreasing the learning rate after a plateau.')
     parser.add_argument('--patience', type=int, default=10,
-                        help='Number of epochs to wait before decaying '
-                        'the learning rate.')
+                        help='performance metric does not improve after '
+                        '`early_stop` number of epochs.')
     parser.add_argument('--min_lr', type=float, default=1e-8,
                         help='Lower-bound on learning rate decay.')
 
@@ -371,20 +365,16 @@ if __name__ == '__main__':
 
     FLAGS = parser.parse_args()
     timestamp = time.strftime('%Y-%m-d-%H%M')
-    exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.root_dir, FLAGS.exp_dir)
+    exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.res_dir, FLAGS.exp_dir)
 
     # Basic assertions
-    if FLAGS.load_pretrained is not None:
-        if 'film' in FLAGS.load_pretrained:
-            assert (FLAGS.film and FLAGS.block_replace is not None and
-                    FLAGS.bn_replace is not None)
     # TODO: support for variable number of samples in the combined dataset
     assert FLAGS.n_samples == -1
 
     # Set up logging
-    os.makedirs(os.path.join(FLAGS.log_dir, FLAGS.root_dir), exist_ok=True)
+    os.makedirs(os.path.join(FLAGS.log_dir, FLAGS.res_dir), exist_ok=True)
     logging.basicConfig(
-        filename=os.path.join(FLAGS.log_dir, FLAGS.root_dir,
+        filename=os.path.join(FLAGS.log_dir, FLAGS.res_dir,
                               f'{FLAGS.exp_dir}_{FLAGS.seed}.log'),
         filemode='w',
         format='%(asctime)s\t %(levelname)s:\t%(message)s',
@@ -445,6 +435,7 @@ if __name__ == '__main__':
     }
 
     # Define PyTorch DataLoaders
+    deterministic(FLAGS.seed)
     train_dataloaders = {}
     for split in ['train', 'valid']:
         datasets = {}
@@ -455,9 +446,10 @@ if __name__ == '__main__':
                 n_samples[split],
                 transform=transform[split])
         dataset = ConcatDataset(list(datasets.values()))
-        shuffle = bool(split == 'train')
+        is_train = bool(split == 'train')
         train_dataloaders[split] = DataLoader(
-            dataset, batch_size=FLAGS.batch_size, shuffle=shuffle)
+            dataset, batch_size=FLAGS.batch_size, shuffle=is_train,
+            drop_last=(is_train and 2 * FLAGS.n_samples > FLAGS.batch_size))
         logging.info('Num. combined %s samples: %d', split, len(dataset))
 
     test_dataloaders = {}
@@ -468,7 +460,8 @@ if __name__ == '__main__':
             n_samples['test'],
             transform=transform['test'])
         test_dataloaders[state] = DataLoader(
-            dataset, batch_size=FLAGS.batch_size, shuffle=False)
+            dataset, batch_size=FLAGS.batch_size, shuffle=False,
+            drop_last=False)
         logging.info('Num. %s test samples: %d', state, len(dataset))
 
     # Define classifier, criterion, and optimizer
@@ -482,22 +475,12 @@ if __name__ == '__main__':
     else:
         net = ResNetClassifier(hidden_size=FLAGS.hidden_size,
                                resnet=FLAGS.resnet)
-    # Load source-trained model and fine-tune a subset of parameters
-    if FLAGS.load_pretrained is not None:
-        state_dict = torch.load(FLAGS.load_pretrained,
-                                map_location=torch_device)
-        # Modify state_dict to remove DataParallel module wrapper
-        new_state_dict = OrderedDict(
-            [(key.split('module.')[-1], state_dict[key])
-             for key in state_dict])
-        net.load_state_dict(new_state_dict)
-        if FLAGS.domain == 'target':
-            freeze_params(net, FLAGS.fine_tune_modules)
     logging.info(net)
     if torch.cuda.device_count() > 1:
         net = torch.nn.DataParallel(net)
     net.to(torch_device)
 
+    # Instantiate criterion, optimizer, and learning rate scheduler
     torch_criterion = torch.nn.BCEWithLogitsLoss(reduction='mean')
     torch_optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, net.parameters()), lr=FLAGS.lr)
@@ -506,12 +489,8 @@ if __name__ == '__main__':
         threshold=1e-4, min_lr=FLAGS.min_lr, verbose=True)
 
     # Train and evaluate model
-    if not FLAGS.inference_only:
-        train_results, net = train(FLAGS, net, torch_criterion,
-                                         torch_optimizer, lr_scheduler,
-                                         train_dataloaders, torch_device)
-    else:  # Training results do not exist for pre-trained inference-only models
-        train_results = {}
+    train_results, net = train(FLAGS, net, torch_criterion, torch_optimizer,
+                               lr_scheduler, train_dataloaders, torch_device)
     test_results = {}
     for state in FLAGS.states:
         test_results.update(
