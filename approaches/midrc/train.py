@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import os
+import shutil
 import time
 from collections import OrderedDict
 from typing import Dict
@@ -18,7 +19,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 from utils import constants
 from utils.dataset import MIDRCDataset
-from utils.fine_tune import get_modules_from_aliases, freeze_params
+from utils.fine_tune import freeze_params, get_modules_from_aliases
 from utils.utils import deterministic
 
 
@@ -121,7 +122,11 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
             # Evaluate training predictions against ground truth labels
             epoch_loss = running_loss / total
             epoch_acc = float(running_corrects) / total
-            epoch_auc = roc_auc_score(y_true, y_pred)
+            try:
+                epoch_auc = roc_auc_score(y_true, y_pred)
+            except ValueError:
+                # Ill-defined when y_true only consists of one class
+                epoch_auc = 0.0
             trial_results[f'{phase}_epoch_loss'].append(epoch_loss)
             trial_results[f'{phase}_epoch_acc'].append(epoch_acc)
             trial_results[f'{phase}_epoch_auc'].append(epoch_auc)
@@ -272,7 +277,11 @@ def test(args: argparse.Namespace, model: torch.nn.Module,
 
     test_loss = running_loss / total
     test_acc = float(running_corrects) / total
-    test_auc = roc_auc_score(y_true, y_pred)
+    try:
+        test_auc = roc_auc_score(y_true, y_pred)
+    except ValueError:
+        # Ill-defined when y_true only consists of one class
+        test_auc = 0.0
     trial_results['test_loss'] = test_loss
     trial_results['test_acc'] = test_acc
     trial_results['test_auc'] = test_auc
@@ -384,7 +393,7 @@ if __name__ == '__main__':
     parser.add_argument('--verbose', action='store_true', default=False)
 
     FLAGS = parser.parse_args()
-    timestamp = time.strftime('%Y-%m-d-%H%M')
+    timestamp = time.strftime('%Y-%m-%d-%H%M')
     exp_dir = os.path.join(constants.RESULTS_DIR, FLAGS.res_dir, FLAGS.exp_dir)
 
     # Basic assertions
@@ -398,7 +407,7 @@ if __name__ == '__main__':
             assert len(FLAGS.fine_tune_modules) == 1, (
                 'Already fine-tuning all parameters.')
         for alias in FLAGS.fine_tune_modules:
-            basic_check = alias in ['all', 'initial', 'clf']
+            basic_check = alias in ['all', 'bn0', 'clf']
             block_check = True
             if 'block' in alias:
                 split = alias.split('-')
@@ -414,7 +423,7 @@ if __name__ == '__main__':
     os.makedirs(os.path.join(FLAGS.log_dir, FLAGS.res_dir), exist_ok=True)
     logging.basicConfig(
         filename=os.path.join(FLAGS.log_dir, FLAGS.res_dir,
-                              f'{FLAGS.exp_dir}_{FLAGS.seed}.log'),
+                              f'{timestamp}_{FLAGS.exp_dir}_{FLAGS.seed}.log'),
         filemode='w',
         format='%(asctime)s\t %(levelname)s:\t%(message)s',
         level=logging.DEBUG,
@@ -539,7 +548,7 @@ if __name__ == '__main__':
         filter(lambda p: p.requires_grad, net.parameters()), lr=FLAGS.lr)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         torch_optimizer, factor=FLAGS.decay_factor, patience=FLAGS.patience,
-        threshold=1e-4, min_lr=FLAGS.min_lr, verbose=True)
+        threshold=1e-4, min_lr=FLAGS.min_lr, verbose=FLAGS.verbose)
 
     # ========== TRAIN ==========
     deterministic(FLAGS.seed)
@@ -592,3 +601,9 @@ if __name__ == '__main__':
     torch.save(net.state_dict(),
                os.path.join(exp_dir,
                             f'{FLAGS.domain}_checkpoint_{FLAGS.seed}.pt'))
+
+    # Copy .log file
+    src = os.path.join(FLAGS.log_dir, FLAGS.res_dir,
+                       f'{timestamp}_{FLAGS.exp_dir}_{FLAGS.seed}.log')
+    des = os.path.join(exp_dir, f'train_log_{FLAGS.seed}.log')
+    shutil.copyfile(src, des)

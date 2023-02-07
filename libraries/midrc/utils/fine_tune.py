@@ -11,7 +11,7 @@ def get_modules_from_aliases(aliases: List[str], resnet: str,
     """Returns a list of module names from input alias.
 
     :param aliases: List of string aliases for a subset of ResNet modules to
-        fine-tune.
+        fine-tune (e.g. [block1, block2-bn123, block3-bn3]).
     :param resnet: ResNet architecture
     :param final_bottleneck_only: Boolean flag dictating whether to include
         modules specified by `aliases` in every bottleneck unit, or only in the
@@ -22,8 +22,8 @@ def get_modules_from_aliases(aliases: List[str], resnet: str,
     block_sizes = RESNET_BLOCK_SIZES[resnet]
     modules = []
     for alias in aliases:
-        if alias == 'initial':
-            modules.extend(['resnet.conv1', 'resnet.bn1'])
+        if alias == 'bn0':
+            modules.append('resnet.bn1')
         if 'block' in alias:
             split = alias.split('-')
             block = int(split[0][-1])
@@ -53,7 +53,7 @@ def get_modules_from_aliases(aliases: List[str], resnet: str,
                 'resnet.conv1', 'resnet.bn1', 'resnet.layer1', 'resnet.layer2',
                 'resnet.layer3', 'resnet.layer4', 'resnet.fc', 'linear'
             ]
-    return modules
+    return list(set(modules))
 
 
 def freeze_params(model: torch.nn.Module, fine_tune_modules: List[str]):
