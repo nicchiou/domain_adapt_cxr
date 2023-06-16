@@ -86,3 +86,14 @@ def freeze_params(model: torch.nn.Module, fine_tune_modules: List[str]):
     for name, param in model.named_parameters():
         if param.requires_grad:
             logging.debug('\t%s', name)
+
+
+def get_depth_alias(name: str):
+    if name in ['resnet.conv1', 'resnet.bn1', 'resnet.maxpool',
+                'resnet.avgpool', 'resnet.fc', 'linear']:
+        alias = name
+    elif 'layer' in name:
+        layer_num = int(name.split('.')[1][-1])
+        unit_num = int(name.split('.')[2])
+        alias = f'resnet.layer{layer_num}.unit{unit_num}'
+    return alias

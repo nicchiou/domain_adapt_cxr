@@ -116,8 +116,10 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
                 # Calculate gradient norms
                 if phase == 'train':
                     for p in list(filter(
-                            lambda p: p.grad is not None, model.parameters())):
-                        running_grad_norm += p.grad.data.norm(2).item()
+                            lambda p: (p.grad is not None and p.requires_grad),
+                            model.parameters())):
+                        running_grad_norm += \
+                            torch.linalg.norm(p.grad.data).item()
 
             # Evaluate training predictions against ground truth labels
             epoch_loss = running_loss / total
@@ -305,9 +307,9 @@ if __name__ == '__main__':
 
     # Dataset
     parser.add_argument('--train_state', type=str, default='IL',
-                        choices=['CA', 'IL', 'IN', 'NC', 'TX'])
+                        choices=['CA', 'IL', 'IN', 'TX'])
     parser.add_argument('--test_state', type=str, default='CA',
-                        choices=['CA', 'IL', 'IN', 'NC', 'TX'])
+                        choices=['CA', 'IL', 'IN', 'TX'])
     parser.add_argument('--n_samples', type=int, default=10000,
                         help='Total number of samples used for training. '
                         'Setting this flag to -1 uses all available samples '
@@ -321,7 +323,7 @@ if __name__ == '__main__':
                         'or fine-tune an existing model (target).')
 
     # Model architecture
-    parser.add_argument('--resnet', type=str, default='resnet50',
+    parser.add_argument('--resnet', type=str, default='resnet152',
                         choices=['resnet18', 'resnet34', 'resnet50',
                                  'resnet101', 'resnet152'],
                         help='ResNet architecture to use.')
@@ -539,7 +541,10 @@ if __name__ == '__main__':
             freeze_params(net, modules)
     logging.info(net)
     if torch.cuda.device_count() > 1:
-        net = torch.nn.DataParallel(net)
+        gpu_ids = list(range(torch.cuda.device_count()))
+        net = torch.nn.DataParallel(net,
+                                    device_ids=gpu_ids,
+                                    output_device=gpu_ids[-1])
     net.to(torch_device)
 
     # Instantiate criterion, optimizer, and learning rate schedule
@@ -584,8 +589,9 @@ if __name__ == '__main__':
         'domain': FLAGS.domain,
         'train_state': FLAGS.train_state,
         'test_state': FLAGS.test_state,
-        'iter': FLAGS.seed,
+        'seed': FLAGS.seed,
         'n_samples': FLAGS.n_samples,
+        'early_stopping_metric': FLAGS.early_stopping_metric,
         f'{FLAGS.train_state}_loss': train_state_results['test_loss'],
         f'{FLAGS.train_state}_acc': train_state_results['test_acc'],
         f'{FLAGS.train_state}_auc': train_state_results['test_auc'],

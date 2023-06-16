@@ -2,7 +2,7 @@
 
 res_dir='early_stop_auc/film_block-1234_bn-3_all/'
 log_dir='jobs/logs/'
-approach='FiLM_Target_ERM'
+approach='Target_ERM_FiLM'
 
 resnet='resnet152'
 hidden_size=1024

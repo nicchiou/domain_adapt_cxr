@@ -45,10 +45,11 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
     trial_results['train_epoch_loss'] = []
     trial_results['train_epoch_acc'] = []
     trial_results['train_epoch_auc'] = []
+    trial_results['train_epoch_grad_norm'] = []
     trial_results['valid_epoch_loss'] = []
     trial_results['valid_epoch_acc'] = []
     trial_results['valid_epoch_auc'] = []
-    trial_results['grad_norm'] = []
+    trial_results['valid_epoch_grad_norm'] = []
 
     best_model = copy.deepcopy(model.state_dict())
     best_model_epoch = 0
@@ -91,31 +92,29 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
                 optimizer.zero_grad()
 
                 # Forward pass
-                with torch.set_grad_enabled(phase == 'train'):
-                    outputs = model(inputs)
-                    labels = labels.type_as(outputs)
-                    probs = torch.sigmoid(outputs)
-                    preds = probs > 0.5
+                outputs = model(inputs)
+                labels = labels.type_as(outputs)
+                probs = torch.sigmoid(outputs)
+                preds = probs > 0.5
 
-                    y_prob.extend(probs.cpu().data.tolist())
-                    y_pred.extend(preds.cpu().data.tolist())
-                    y_true.extend(labels.cpu().data.tolist())
+                y_prob.extend(probs.cpu().data.tolist())
+                y_pred.extend(preds.cpu().data.tolist())
+                y_true.extend(labels.cpu().data.tolist())
 
-                    # Backward pass
-                    loss = criterion(outputs, labels)
-                    if phase == 'train':
-                        loss.backward()
-                        optimizer.step()
+                # Backward pass
+                loss = criterion(outputs, labels)
+                if phase == 'train':
+                    loss.backward()
+                    optimizer.step()
 
                 # Keep track of performance metrics (loss is mean-reduced)
                 running_loss += loss.item() * labels.size(0)
                 running_corrects += torch.sum(preds == labels.data).item()
 
                 # Calculate gradient norms
-                if phase == 'train':
-                    for p in list(filter(
-                            lambda p: p.grad is not None, model.parameters())):
-                        running_grad_norm += p.grad.data.norm(2).item()
+                for p in list(filter(
+                        lambda p: p.grad is not None, model.parameters())):
+                    running_grad_norm += p.grad.data.norm(2).item()
 
             # Evaluate training predictions against ground truth labels
             epoch_loss = running_loss / total
@@ -125,12 +124,11 @@ def train(args: argparse.Namespace, model: torch.nn.Module,
             except ValueError:
                 # Ill-defined when y_true only consists of one class
                 epoch_auc = 0.0
+            grad_norm_avg = running_grad_norm / total
             trial_results[f'{phase}_epoch_loss'].append(epoch_loss)
             trial_results[f'{phase}_epoch_acc'].append(epoch_acc)
             trial_results[f'{phase}_epoch_auc'].append(epoch_auc)
-            if phase == 'train':
-                grad_norm_avg = running_grad_norm / total
-                trial_results['grad_norm'].append(grad_norm_avg)
+            trial_results[f'{phase}_epoch_grad_norm'].append(grad_norm_avg)
 
             # Update LR scheduler with current validation loss
             if phase == 'valid':
@@ -303,7 +301,7 @@ if __name__ == '__main__':
 
     # Dataset
     parser.add_argument('--states', type=str, nargs='+', required=True,
-                        choices=['CA', 'IL', 'IN', 'NC', 'TX'],
+                        choices=['CA', 'IL', 'IN', 'TX'],
                         help='States to use for combined training dataset and '
                         'evaluating each state\'s test performance.')
     parser.add_argument('--n_samples', type=int, default=-1,
@@ -319,7 +317,7 @@ if __name__ == '__main__':
                         'or fine-tune an existing model (target).')
 
     # Model architecture
-    parser.add_argument('--resnet', type=str, default='resnet50',
+    parser.add_argument('--resnet', type=str, default='resnet152',
                         choices=['resnet18', 'resnet34', 'resnet50',
                                  'resnet101', 'resnet152'],
                         help='ResNet architecture to use.')
@@ -343,7 +341,7 @@ if __name__ == '__main__':
                         ' step of the ResNet.')
 
     # Optimization and model-fitting hyperparameters
-    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--seed', type=int, default=0)
@@ -522,8 +520,9 @@ if __name__ == '__main__':
         'approach': FLAGS.approach,
         'domain': FLAGS.domain,
         'states': FLAGS.states,
-        'iter': FLAGS.seed,
+        'seed': FLAGS.seed,
         'n_samples': FLAGS.n_samples,
+        'early_stopping_metric': FLAGS.early_stopping_metric,
         f'{FLAGS.states[0]}_loss': test_results[f'{FLAGS.states[0]}_test_loss'],
         f'{FLAGS.states[0]}_acc': test_results[f'{FLAGS.states[0]}_test_acc'],
         f'{FLAGS.states[0]}_auc': test_results[f'{FLAGS.states[0]}_test_auc'],

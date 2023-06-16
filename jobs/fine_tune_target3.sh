@@ -17,7 +17,7 @@ n_samples=(20 50 100 200 300)
 for i in ${!seed[@]}; do
     for j in ${!train_state[@]}; do
         for k in ${!n_samples[@]}; do
-            exp_dir=$resnet'_source-IL_target-'${train_state[$j]}'_ft-clf_ns-all_nt-'${n_samples[$k]}
+            exp_dir=$resnet'_source-IL_target-'${train_state[$j]}'_ft-block3_ns-all_nt-'${n_samples[$k]}
             model_fname=$model_path'/source_checkpoint_'${seed[$i]}'.pt'
             echo $exp_dir
 
@@ -34,7 +34,7 @@ for i in ${!seed[@]}; do
                 --resnet $resnet \
                 --hidden_size $hidden_size \
                 --load_pretrained $model_fname \
-                --fine_tune_modules clf \
+                --fine_tune_modules block3 \
                 --epochs 100 \
                 --lr 0.0003 \
                 --batch_size 128 \
@@ -61,7 +61,7 @@ for i in ${!seed[@]}; do
                 --verbose
         done
 
-        exp_dir=$resnet'_source-IL_target-'${train_state[$j]}'_ft-clf_ns-all_nt-all'
+        exp_dir=$resnet'_source-IL_target-'${train_state[$j]}'_ft-block3_ns-all_nt-all'
         model_fname=$model_path'/source_checkpoint_'${seed[$i]}'.pt'
         echo $exp_dir
 
@@ -78,7 +78,7 @@ for i in ${!seed[@]}; do
             --resnet $resnet \
             --hidden_size $hidden_size \
             --load_pretrained $model_fname \
-            --fine_tune_modules clf \
+            --fine_tune_modules block3 \
             --epochs 100 \
             --lr 0.0003 \
             --batch_size 128 \

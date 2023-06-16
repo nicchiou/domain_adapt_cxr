@@ -23,6 +23,7 @@ torchvision = "==0.9.1"
 flake8 = "*"
 pylint = "*"
 midrc-domain-adapt-cxr = {editable = true, path = "./libraries/midrc"}
+dataframe-image = "*"
 
 [dev-packages]
 
